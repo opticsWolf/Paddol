@@ -296,7 +296,6 @@ class CSVData:
                 df = df.with_columns(pl.Series(col, y_interp))
         return df
     
-
     def sort_by_wavelength_desc(self, df: pl.DataFrame) -> pl.DataFrame:
         """
         Sort DataFrame by wavelength column in descending order.

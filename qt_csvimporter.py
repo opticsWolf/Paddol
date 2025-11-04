@@ -8,17 +8,34 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 import sys
 from pathlib import Path
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QListWidget, QListWidgetItem, QMenu,
+    QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QListWidget, QListWidgetItem, QMenu, QAction,
     QFileDialog, QLabel, QHBoxLayout, QComboBox, QSplitter, QTextEdit, QTableView, QMessageBox, QSpinBox, QCheckBox, QGroupBox, QFormLayout
 )
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QIcon 
 from PyQt5.QtCore import Qt, QAbstractTableModel
 
 import polars as pl
 
+from typing import Dict, Union
+
 from csvdata import CSVData
 
-def scan_icons_folder(folder_path):
+def scan_icons_folder(folder_path: Union[str, Path]) -> Dict[str, str]:
+    """Scan *folder_path* for icon files and return a mapping of base names to paths.
+
+    The function looks only at regular files whose extensions are ``.png`` or
+    ``.svg`` (case‑insensitive).  For each matching file the key in the returned
+    dictionary is the filename without its extension (*stem*), while the value
+    is the absolute path as a string, which can be supplied directly to PyQt
+    widgets.
+
+    Args:
+        folder_path: Directory containing icon assets. Can be a ``str`` or
+            :class:`pathlib.Path`.
+
+    Returns:
+        dict[str, str]: Mapping from icon base name to absolute file path.
+    """
     icon_dict = {}
     folder = Path(folder_path)
     # Get all files in the directory that end with .png or .svg (case insensitive)
@@ -31,7 +48,23 @@ def scan_icons_folder(folder_path):
 ICON_DICT = scan_icons_folder(Path("src/icons"))
 
 class PolarsModel(QAbstractTableModel):
-    """Qt model to display a Polars DataFrame in QTableView."""
+    """QAbstractTableModel that wraps a :class:`polars.DataFrame`.
+
+    The model exposes the DataFrame’s rows and columns to Qt view widgets such as
+    ``QTableView``.  Only the minimal set of read‑only methods is implemented:
+    :meth:`rowCount`, :meth:`columnCount`, :meth:`data` and
+    :meth:`headerData`.
+
+    Args:
+        data (polars.DataFrame, optional): Initial DataFrame to display.
+            If ``None`` an empty model is created.
+
+    Notes:
+        The implementation does not support editing or selection changes; it
+        merely forwards the underlying DataFrame to Qt’s view layer.  For
+        performance, the model caches column names and uses vectorised access
+        where possible.
+    """
     def __init__(self, data=None):
         super().__init__()
         self._data = None
@@ -39,17 +72,33 @@ class PolarsModel(QAbstractTableModel):
             self.setDataFrame(data)
     
     def setDataFrame(self, dataframe):
+        """Replace the current DataFrame and reset the model.
+
+        The method signals Qt that the underlying data has changed by calling
+        :meth:`beginResetModel` before swapping in the new frame and
+        :meth:`endResetModel` afterwards.  All attached views will be refreshed
+        to reflect the new contents.
+
+        Args:
+            dataframe (polars.DataFrame): The new DataFrame to display.
+        """
         self.beginResetModel()
         self._data = dataframe
         self.endResetModel()
 
     def rowCount(self, index):
+        """Return the number of rows in the current DataFrame."""
         return len(self._data) if self._data is not None else 0
 
     def columnCount(self, index):
+        """Return the number of columns in the current DataFrame."""
         return len(self._data.columns) if self._data is not None else 0
 
+    # ----------------------------------------------------------------------
+    # Data accessors
+    # ----------------------------------------------------------------------
     def data(self, index, role=Qt.DisplayRole):
+        """Return the string representation of a cell value for display."""
         if not index.isValid() or self._data is None or role != Qt.DisplayRole:
             return None
         try:
@@ -60,6 +109,7 @@ class PolarsModel(QAbstractTableModel):
             return None
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
+        """Return column names or row numbers for the view headers."""
         if role != Qt.DisplayRole or self._data is None:
             return None
         if orientation == Qt.Horizontal:
@@ -298,12 +348,6 @@ class CSVImporterWindow(QMainWindow):
             self.file_list.setCurrentItem(first_new_item)
             self.preview_and_display_file(first_new_item.text())
     
-    
-    #def on_file_selected(self, current, previous):
-    #    """Triggered when user selects a file in the list."""
-    #    if current and current.checkState() == Qt.Checked:
-    #        self.preview_file(current.text())
-    
     def on_file_selected(self, current, previous):
         """Triggered when user selects a file in the list."""
         if not current:
@@ -321,8 +365,7 @@ class CSVImporterWindow(QMainWindow):
             if self.current_file == file_path:
                 self.raw_display.clear()
                 self.model.setDataFrame(pl.DataFrame())
-    
-    
+     
     def preview_file(self, file_path: str):
         """Load and display the raw CSV preview for the given file."""
         self.current_file = file_path
@@ -369,15 +412,25 @@ class CSVImporterWindow(QMainWindow):
     # RIGHT CLICK MENU
     # ====================================================================
     def show_file_context_menu(self, pos):
-        """Show context menu to remove files from the list."""
+        """Display a context menu that allows removal of a selected file.
+
+        Parameters:
+            pos (QPoint): Position relative to ``file_list`` where the menu is shown.
+        """
         item = self.file_list.itemAt(pos)
         if not item:
             return
     
+        # ---- Build the menu -------------------------------------------------
         menu = QMenu(self)
-        remove_action = menu.addAction("Remove File")
+
+        # Create the "Remove File" action and attach an icon
+        remove_action = QAction(QIcon(ICON_DICT['delete_file']), "Remove File", self)
+        menu.addAction(remove_action)
+
+        # ---- Execute the menu -----------------------------------------------
         action = menu.exec_(self.file_list.mapToGlobal(pos))
-    
+        
         if action == remove_action:
             file_path = item.text()
     
@@ -398,6 +451,15 @@ class CSVImporterWindow(QMainWindow):
     # SETTINGS AND IMPORT LOGIC
     # ====================================================================
     def toggle_auto_detection(self, state):
+        """Enable or disable manual separator/decimal controls.
+
+        When checked the UI controls are disabled and separators are auto‑detected
+        (if a file is loaded).  When unchecked the controls are enabled and
+        reset to defaults.
+
+        Args:
+            state (int): Qt.CheckState value.
+        """
         self.separator_combo.setEnabled(state == Qt.Unchecked)
         self.decimal_combo.setEnabled(state == Qt.Unchecked)
         
@@ -407,12 +469,26 @@ class CSVImporterWindow(QMainWindow):
             self.on_seperator_changed(0)
 
     def on_seperator_changed(self, index):
+        """Apply a new separator/decimal configuration when the user changes it.
+
+        The update occurs only if manual scaling is off and a file has been
+        loaded.  *index* is unused but kept for signal compatibility.
+
+        Args:
+            index (int): Index of the selected item in ``separator_combo``.
+        """
         if self.manual_scale_checkbox.isChecked() is not True and self.current_file:
             self.csv_data.separator = self.separator_combo.currentText()
             self.csv_data.decimal_sep = self.decimal_combo.currentText()
             self.preview_and_display_file(self.current_file)
             
     def detect_separators_and_decimal(self):
+        """Auto‑detect the field separator and decimal sign from the loaded CSV.
+
+        The detected values are applied to :attr:`csv_data` and, if present,
+        selected in the corresponding combo boxes.  No action is taken when
+        no content has been loaded.
+        """
         if not self.csv_data.raw_content:
             return
         detected_sep = self.csv_data.detect_separator(self.csv_data.raw_content)
@@ -427,11 +503,30 @@ class CSVImporterWindow(QMainWindow):
         self.csv_data.decimal_sep = detected_decimal
 
     def update_auto_sorting(self, state):
+        """Enable or disable automatic sorting of the CSV data.
+
+        Sets :attr:`csv_data.auto_sorting` based on *state* (``Qt.Checked`` → ``True``).
+        The preview is refreshed afterwards if a file is loaded.
+
+        Args:
+            state (int): Qt.CheckState value.
+        """
         if self.current_file:
             self.csv_data.auto_sorting = (state == Qt.Checked)
             self.preview_and_display_file(self.current_file)
 
     def toggle_manual_scaling(self, state):
+        """Switch between automatic and manual scaling for the data.
+
+        * Checked → enable unit/type selectors and set
+          :attr:`csv_data.manual_scaling` to ``True``.
+        * Unchecked → disable the selectors and set the flag to ``False``.
+
+        The preview is refreshed if a file is currently loaded.
+
+        Args:
+            state (int): Qt.CheckState value.
+        """
         self.wavelength_unit_combo.setEnabled(state == Qt.Checked)
         self.data_type_combo.setEnabled(state == Qt.Checked)
         self.csv_data.manual_scaling = (state == Qt.Checked)
@@ -439,6 +534,17 @@ class CSVImporterWindow(QMainWindow):
             self.preview_and_display_file(self.current_file)
 
     def on_scaling_changed(self, index):
+        """Apply a new unit / data‑type combination when manual scaling is active.
+
+        Connected to the *unit* and *data type* combo boxes; updates
+        :attr:`csv_data.wavelength_unit` and :attr:`csv_data.data_type_unit`
+        only if ``manual_scale_checkbox`` is checked.  The preview is refreshed
+        afterwards.
+
+        Args:
+            index (int): Index of the selected item in the combo box
+                (unused, kept for signal compatibility).
+        """
         if self.manual_scale_checkbox.isChecked():
             #self.csv_data.manual_scaling = self.manual_scale_checkbox.isChecked()
             self.csv_data.wavelength_unit = self.wavelength_unit_combo.currentText()
@@ -448,11 +554,32 @@ class CSVImporterWindow(QMainWindow):
                 self.preview_and_display_file(self.current_file)
     
     def on_interp_mode_change(self, index):
+        """Re‑render the preview when the interpolation mode changes.
+
+        Triggered by the interpolation mode combo box; simply refreshes the
+        current file’s display to use the new setting.
+
+        Args:
+            index (int): Index of the chosen interpolation mode
+                (unused in this slot).
+        """
         if self.current_file:
             self.preview_and_display_file(self.current_file)
 
     def import_data(self):
-        """Import all checked files and display the last processed one."""
+        """
+        Import all user‑selected CSV files and display the last successfully read file.
+    
+        The method reads configuration options from the UI (separator, decimal sign,
+        row‑skipping, interpolation mode), then iterates over the list widget items.
+        Each checked file is loaded via :meth:`csv_data.load_csv` and converted to a
+        pandas DataFrame by :meth:`csv_data.import_data`.  Files that raise an exception
+        are un‑checked and trigger a warning dialog.
+    
+        After processing, if at least one file succeeded the table model is updated
+        with the last DataFrame and the raw text area shows the raw CSV content.
+        If no files were selected or all imports failed, appropriate warnings are shown.
+        """
         checked_items = [
             self.file_list.item(i).text()
             for i in range(self.file_list.count())
@@ -495,7 +622,22 @@ class CSVImporterWindow(QMainWindow):
         self.raw_display.setText(self.csv_data.raw_content)
 
     def import_all_files(self):
-        """Import all checked files into dataframe_dict keyed by filename."""
+        """
+        Load every checked CSV file into ``self.dataframe_dict``.
+        
+        For each selected file the method:
+        
+        1. Loads the raw content via :meth:`csv_data.load_csv`.
+        2. If *Auto‑Detect* is enabled, calls :meth:`detect_separators_and_decimal`
+           to update separator/decimal settings.
+        3. Converts the CSV into a pandas DataFrame with
+           :meth:`csv_data.import_data` and stores it in ``self.dataframe_dict``,
+           keyed by the file’s base name.
+        
+        Files that raise an exception are un‑checked and trigger a warning dialog.
+        After processing, a message box reports how many files were imported or
+        informs the user if none succeeded.
+        """
         self.dataframe_dict = {}
     
         for i in range(self.file_list.count()):
