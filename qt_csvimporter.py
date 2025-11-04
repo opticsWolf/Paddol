@@ -8,10 +8,12 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 import sys
 from pathlib import Path
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QListWidget, QListWidgetItem, QMenu, QAction,
-    QFileDialog, QLabel, QHBoxLayout, QComboBox, QSplitter, QTextEdit, QTableView, QMessageBox, QSpinBox, QCheckBox, QGroupBox, QFormLayout
+    QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QListWidget, 
+    QListWidgetItem, QMenu, QAction, QFileDialog, QLabel, QHBoxLayout, 
+    QComboBox, QSplitter, QTextEdit, QTableView, QMessageBox, QSpinBox, 
+    QCheckBox, QGroupBox, QFormLayout
 )
-from PyQt5.QtGui import QIcon 
+from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt, QAbstractTableModel
 
 import polars as pl
@@ -173,10 +175,11 @@ class CSVImporterWindow(QMainWindow):
         self.decimal_combo.addItems([".", ","])
         self.decimal_combo.setEnabled(False)
         self.decimal_combo.currentIndexChanged.connect(self.on_seperator_changed)
-        sep_dec_layout.addWidget(QLabel("Separator:"))
-        sep_dec_layout.addWidget(self.separator_combo)
-        sep_dec_layout.addWidget(QLabel("Decimal:"))
-        sep_dec_layout.addWidget(self.decimal_combo)
+        sep_dec_layout.addWidget(QLabel("Separator:"), stretch=1)
+        sep_dec_layout.addWidget(self.separator_combo, stretch=3)
+        sep_dec_layout.addStretch(1)
+        sep_dec_layout.addWidget(QLabel("Decimal:"), stretch=1)
+        sep_dec_layout.addWidget(self.decimal_combo, stretch=3)
         options_layout.addRow(sep_dec_layout)
 
         skip_layout = QHBoxLayout()
@@ -186,10 +189,11 @@ class CSVImporterWindow(QMainWindow):
         self.skip_end_spin = QSpinBox()
         self.skip_end_spin.setRange(0, 100)
         self.skip_end_spin.valueChanged.connect(self.import_data)
-        skip_layout.addWidget(QLabel("Skip Start:"))
-        skip_layout.addWidget(self.skip_initial_spin)
-        skip_layout.addWidget(QLabel("Skip End:"))
-        skip_layout.addWidget(self.skip_end_spin)
+        skip_layout.addWidget(QLabel("Skip Start:"), stretch=1)
+        skip_layout.addWidget(self.skip_initial_spin, stretch=3)
+        skip_layout.addStretch(1)
+        skip_layout.addWidget(QLabel("Skip End:"), stretch=1)
+        skip_layout.addWidget(self.skip_end_spin, stretch=3)
         options_layout.addRow(skip_layout)
 
         # ────── Checkbox to enable/disable scaling ──────
@@ -210,11 +214,11 @@ class CSVImporterWindow(QMainWindow):
         self.wavelength_unit_combo.setEnabled(False)
         self.data_type_combo.setEnabled(False)
 
-        manual_layout.addWidget(QLabel("Wavelength:"))
-        manual_layout.addWidget(self.wavelength_unit_combo)
-
-        manual_layout.addWidget(QLabel("Data Type:"))
-        manual_layout.addWidget(self.data_type_combo)
+        manual_layout.addWidget(QLabel("Wavelength:"), stretch=1)
+        manual_layout.addWidget(self.wavelength_unit_combo, stretch=3)
+        manual_layout.addStretch(1)
+        manual_layout.addWidget(QLabel("Data Type:"), stretch=1)
+        manual_layout.addWidget(self.data_type_combo, stretch=3)
         options_layout.addRow(manual_layout)
 
         # ────── Connect the two combo boxes to one slot ──────
