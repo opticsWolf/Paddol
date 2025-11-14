@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Created on Tue Nov 11 22:26:19 2025
+PADDOL: Python Advanced Design & Dispersion Optimization Lab
+Copyright (c) 2025 opticsWolf
 
-@author: Frank
+SPDX-License-Identifier: LGPL-3.0-or-later
 """
 
 # -*- coding: utf-8 -*-
@@ -10,16 +11,17 @@ Created on Tue Nov 11 22:26:19 2025
 import sys
 import io
 from pathlib import Path
-from typing import List, Dict, Any, Union
+from typing import List, Dict, Any, Optional
 
 import polars as pl
+import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.cm as cm
+#import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.backends.backend_qt5 import NavigationToolbar2QT as NavigationToolbar
 
-from PyQt5.QtCore import Qt, QModelIndex, QItemSelectionModel, QPoint, QMimeData, Qt    
+from PyQt5.QtCore import QItemSelectionModel, QPoint, Qt
 
 from PyQt5.QtGui import QStandardItemModel, QStandardItem, QIcon, QImage, QPixmap
 
@@ -32,34 +34,12 @@ from PyQt5.QtWidgets import (
     QAbstractItemView,
     QMenu,
     QAction,
+    QSplitter,
+    QGroupBox,
+    QSizePolicy
     )
 
-def scan_icons_folder(folder_path: Union[str, Path]) -> Dict[str, str]:
-    """Scan *folder_path* for icon files and return a mapping of base names to paths.
-
-    The function looks only at regular files whose extensions are ``.png`` or
-    ``.svg`` (case‑insensitive).  For each matching file the key in the returned
-    dictionary is the filename without its extension (*stem*), while the value
-    is the absolute path as a string, which can be supplied directly to PyQt
-    widgets.
-
-    Args:
-        folder_path: Directory containing icon assets. Can be a ``str`` or
-            :class:`pathlib.Path`.
-
-    Returns:
-        dict[str, str]: Mapping from icon base name to absolute file path.
-    """
-    folder = Path(folder_path)
-    icon_dict: Dict[str, str] = {}
-    if not folder.is_dir():
-        return icon_dict
-    for file in folder.iterdir():
-        if file.is_file() and file.suffix.lower() in {".png", ".svg"}:
-            icon_dict[file.stem] = str(file.resolve())
-    return icon_dict
-
-ICON_DICT = scan_icons_folder(Path("src/icons"))
+from qt_icons import ICON_DICT, scan_icons_folder
 
 class CustomNavigationToolbar(NavigationToolbar):
     """
@@ -104,48 +84,78 @@ class CustomNavigationToolbar(NavigationToolbar):
         if icons_dir:
             self.icon_dir = str(Path(icons_dir).resolve())
 
+        # Store initial view limits when first shown
+        self._initial_limits: Dict[str, List[float]] = {}
+
+    def home(self):
+        if not self.canvas.figure.get_axes():
+            return
+    
+        # Get data range from all lines in the plot
+        x_data = []
+        y_data = []
+        for ax in self.canvas.figure.get_axes():
+            for line in ax.lines:
+                x, y = line.get_data()
+                x_data.extend(x)
+                y_data.extend(y)
+    
+        # Compute min and max values
+        x_min, x_max = min(x_data), max(x_data)
+        y_min, y_max = min(y_data), max(y_data)
+    
+        # Add a small margin (5% of the data range)
+        x_margin = 0.05 * (x_max - x_min) if x_max > x_min else 0.1
+        y_margin = 0.05 * (y_max - y_min) if y_max > y_min else 0.1
+    
+        # Apply limits with margins
+        for ax in self.canvas.figure.get_axes():
+            ax.set_xlim(x_min - x_margin, x_max + x_margin)
+            ax.set_ylim(y_min - y_margin, y_max + y_margin)
+    
+        # Redraw the canvas
+        self.canvas.draw()
+        
 class PolarsPlotWidget(QWidget):
     """
-    A widget that displays one or more Polars DataFrames as a Matplotlib plot.
+    A widget that displays a single Polars DataFrame as a Matplotlib plot.
 
-    The first column in each DataFrame is used for the x-axis. Multiple DataFrames can be plotted together,
-    with the legend using "dict_key: column_name" format. Column names appear in QListViews; selecting
-    items updates the plot dynamically.
+    The first column in the DataFrame is used for the x-axis. Columns can be selected
+    from the list view to include them in the plot.
 
     Attributes
     ----------
-    dataframes (Dict[str, pl.DataFrame]): A dictionary mapping names to Polars DataFrames.
-    x_arrays (Dict[str, np.ndarray]): Mapping from DataFrame names to their first column's NumPy array.
-    y_arrays (Dict[str, Dict[str, np.ndarray]]): Nested mapping of DataFrame names to column names
-            and corresponding NumPy arrays for plotting.
+    dataframe (Optional[pl.DataFrame]): The current Polars DataFrame being displayed.
+    x_array (np.ndarray): NumPy array of x values (first column).
+    y_arrays (Dict[str, np.ndarray]): Mapping of column names to their NumPy arrays for plotting.
     """
 
     def __init__(self, parent: Any = None) -> None:
+        """Initialize the widget with a horizontal split view for columns and plot.
+    
+        The layout consists of two main areas in group boxes arranged horizontally using QSplitter.
+        Each group box is wrapped in an additional QVBoxLayout for better spacing control and
+        future extensibility. The left area shows available columns to select from, while the right
+        area displays the plot with navigation toolbar below it. Both panes are resizable by
+        dragging the splitter handle.
+    
+        Args:
+            parent: Optional parent widget. Defaults to None.
+        """
         super().__init__(parent)
-
-        self.dataframes: Dict[str, pl.DataFrame] = {}
-        self.x_arrays: Dict[str, np.ndarray] = {}
-        self.y_arrays: Dict[str, Dict[str, np.ndarray]] = {}
-
-        # ----- UI layout -----
-        main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-
-        # Left side: data source selection (dict keys) and column list
-        left_layout = QVBoxLayout()
-        left_layout.setContentsMargins(0, 0, 0, 0)
-
-        # DataFrame list view
-        self.df_list_view = QListView()
-        self.df_list_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.df_model = QStandardItemModel()
-        self.df_list_view.setModel(self.df_model)
-        self.df_list_view.selectionModel().selectionChanged.connect(
-            self._on_df_selection_changed
-        )
-        left_layout.addWidget(self.df_list_view, stretch=1)
-
-        # Column list view
+    
+        self.dataframe: Optional[pl.DataFrame] = None
+        self.x_array: np.ndarray = np.array([])
+    
+        # Create horizontal splitter for resizable panes
+        main_splitter = QSplitter(Qt.Horizontal)
+        main_splitter.setOpaqueResize(True)  # Optimize for resizing performance
+    
+        # Left pane: Column selection group box with outer vbox layout
+        col_group = QGroupBox("Data Columns")
+        col_layout = QVBoxLayout(col_group)
+        col_layout.setContentsMargins(8, 8, 8, 8)  # Margins: left, top, right, bottom
+    
         self.col_list_view = QListView()
         self.col_list_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.col_model = QStandardItemModel()
@@ -153,86 +163,107 @@ class PolarsPlotWidget(QWidget):
         self.col_list_view.selectionModel().selectionChanged.connect(
             self._on_selection_changed
         )
-        left_layout.addWidget(self.col_list_view, stretch=2)
-
-        # Right: Matplotlib canvas
+        col_layout.addWidget(self.col_list_view)
+    
+        # Set size policy for the list view to take available space
+        self.col_list_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+    
+        # Wrap the group box in an outer vbox layout for more control
+        left_wrapper = QWidget()
+        left_layout = QVBoxLayout(left_wrapper)
+        left_layout.setContentsMargins(0, 0, 0, 0)  # No margins since col_group has its own
+        left_layout.addWidget(col_group)
+    
+        # Set size policy for the wrapper to take available space but not more than needed
+        left_wrapper.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Expanding)
+        left_wrapper.setMinimumWidth(150)
+    
+        main_splitter.addWidget(left_wrapper)
+    
+        # Right pane: Plot group box with outer vbox layout
+        plot_group = QGroupBox("Plot View")
+        plot_layout = QVBoxLayout(plot_group)
+        plot_layout.setContentsMargins(8, 8, 8, 8)
+    
+        # Initialize matplotlib components
         self.figure, self.ax = plt.subplots(figsize=(5, 4))
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.toolbar = CustomNavigationToolbar(self.canvas, self, icons_dir="src/icons")
-        self._init_context_menu() 
-
-        plot_layout = QVBoxLayout()
+        self._init_context_menu()
+    
         plot_layout.addWidget(self.canvas)
         plot_layout.addWidget(self.toolbar)
+    
+        # Wrap the group box in an outer vbox layout
+        right_wrapper = QWidget()
+        right_layout = QVBoxLayout(right_wrapper)
+        right_layout.setContentsMargins(0, 0, 0, 0)  # No margins since plot_group has its own
+        right_layout.addWidget(plot_group)
+    
+        # Set size policy for the wrapper to take available space
+        right_wrapper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+    
+        main_splitter.addWidget(right_wrapper)
+    
+        # Set up main layout
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(main_splitter)
+    
+        # Set initial sizes (column list 25% / plot 75%) using relative ratios
+        #main_splitter.setSizes([1, 5])  # Ratio of left to right
+    
+        self._apply_modern_style()
 
-        plot_widget = QWidget()
-        plot_widget.setLayout(plot_layout)
-
-        main_layout.addLayout(left_layout, stretch=1)
-        main_layout.addWidget(plot_widget, stretch=3)
-        
     # ------------------------------------------------------------------
-    def set_data_dict(self, data_dict: Dict[str, pl.DataFrame]) -> None:
-        """Load a dictionary of Polars DataFrames."""
-        if not isinstance(data_dict, dict):
-            raise TypeError("data_dict must be a dict of Polars DataFrames")
+    def set_dataframe(self, df: pl.DataFrame) -> None:
+        """Load a single Polars DataFrame for display.
 
-        self.dataframes.clear()
-        self.x_arrays.clear()
-        self.y_arrays.clear()
+        Args:
+            df: A Polars DataFrame where the first column will be used as x-axis.
+                Subsequent columns can be selected for plotting on y-axis.
+        """
+        if not isinstance(df, pl.DataFrame):
+            raise TypeError("Input must be a Polars DataFrame")
 
-        for key, df in data_dict.items():
-            if not isinstance(df, pl.DataFrame):
-                continue
-            self.dataframes[key] = df
-            self.x_arrays[key] = df[df.columns[0]].to_numpy()
-            self.y_arrays[key] = {
-                col: df[col].to_numpy() for col in df.columns[1:]
-            }
+        self.dataframe = df
 
-        # Populate df list view
-        self.df_model.clear()
-        for key in self.dataframes.keys():
-            self.df_model.appendRow(QStandardItem(key))
+        # Handle empty or single-column DataFrames gracefully
+        if len(df.columns) == 0:
+            self.x_array = np.array([])
+            self.col_model.clear()
+            return
 
-        # Automatically select all dataframes
-        sel_model = self.df_list_view.selectionModel()
-        for row in range(len(self.dataframes)):
-            idx = self.df_model.index(row, 0)
-            sel_model.select(idx, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+        try:
+            # Convert first column to numpy array for x values
+            self.x_array = df[df.columns[0]].to_numpy()
 
-        # Update combined column list
+        except Exception as e:
+            print(f"Error converting DataFrame to numpy arrays: {e}")
+            self.x_array = np.array([])
+            
+            return
+
+        # Update column selection UI with available columns (excluding x-axis)
         self._update_column_list()
 
     # ------------------------------------------------------------------
     def _update_column_list(self) -> None:
-        """Update the column list view to show all unique columns across selected DataFrames."""
-        sel_model = self.df_list_view.selectionModel()
-        selected_keys = [
-            self.df_model.data(idx)
-            for idx in sel_model.selectedIndexes()
-        ]
-        all_cols = set()
-        for key in selected_keys:
-            all_cols.update(self.dataframes[key].columns[1:])  # skip x-axis
-        all_cols = sorted(all_cols)
+        """Update the column list view to show all available columns (excluding x-axis)."""
+        if not hasattr(self, 'dataframe') or self.dataframe is None:
+            return
+
+        cols = sorted([col for col in self.dataframe.columns[1:]])
 
         self.col_model.clear()
-        for col in all_cols:
+        for col in cols:
             self.col_model.appendRow(QStandardItem(col))
 
         # Select all columns initially
         col_sel_model = self.col_list_view.selectionModel()
-        for row in range(len(all_cols)):
+        for row in range(len(cols)):
             idx = self.col_model.index(row, 0)
             col_sel_model.select(idx, QItemSelectionModel.Select | QItemSelectionModel.Rows)
-
-        self._update_plot()
-
-    # ------------------------------------------------------------------
-    def _on_df_selection_changed(self, *_):
-        """Update available columns when DataFrame selection changes."""
-        self._update_column_list()
 
     # ------------------------------------------------------------------
     def _on_selection_changed(self, *_):
@@ -269,66 +300,71 @@ class PolarsPlotWidget(QWidget):
         self.ax.title.set_color("#222222")
         self.ax.title.set_size(9)
 
-        # Compact layout
-        #self.figure.subplots_adjust(left=0.12, right=0.94, top=0.94, bottom=0.12)
-
     # ------------------------------------------------------------------
     def _update_plot(self) -> None:
         """
-        Plot selected columns from all selected DataFrames with modern style, with truncation and tooltips.
+        Plot selected columns from the DataFrame with modern style.
 
-        This method clears the current plot, applies a modern style, and plots the selected
-        data series. It also sets up interactive tooltips for hovering over lines.
+        This method clears the current plot, applies styling, and plots all selected
+        columns. It also sets up interactive tooltips for hovering over lines.
         """
-        sel_df_model = self.df_list_view.selectionModel()
-        selected_dfs = [self.df_model.data(idx) for idx in sel_df_model.selectedIndexes()]
+        if len(self.x_array) == 0 or not hasattr(self, 'ax'):
+            return
+
         sel_col_model = self.col_list_view.selectionModel()
         selected_cols = [self.col_model.data(idx) for idx in sel_col_model.selectedIndexes()]
 
-        # Ensure figure and axes are set
-        if not hasattr(self, 'figure') or self.figure is None:
-            self.figure, self.ax = plt.subplots(figsize=(5, 4))
+        # Clear and set up plot
         self.ax.clear()
+        
         self._apply_modern_style()
-
+        
         # Gradient color map
         cmap = plt.colormaps["viridis"]
         total_series = sum(
-            1 for k in selected_dfs for c in selected_cols if c in self.y_arrays[k]
-        )
+            1 for c in selected_cols if c in self.dataframe.columns
+            )
         norm = mcolors.Normalize(vmin=0, vmax=max(total_series - 1, 1))
-
+        
         plotted_any = False
-        i = 0
         plotted_lines: List[Any] = []
         full_labels: List[str] = []
         max_label_len = 25
-
-        for key in selected_dfs:
-            df = self.dataframes[key]
-            x = self.x_arrays[key]
-            for col in selected_cols:
-                if col not in self.y_arrays[key]:
-                    continue
-                y = self.y_arrays[key][col]
-                full_label = f"{key}: {col}"
-                short_label = (
-                    full_label if len(full_label) <= max_label_len
-                    else full_label[:max_label_len - 1] + "…"
-                )
-
-                color = cmap(norm(i))
-                line, = self.ax.plot(
-                    x, y,
-                    label=short_label,
-                    color=color,
-                    linewidth=1.4,
-                    alpha=0.9,
-                )
-                plotted_lines.append(line)
-                full_labels.append(full_label)
-                i += 1
-                plotted_any = True
+        i = 0
+        for col in selected_cols:
+            if not hasattr(self, 'dataframe') or self.dataframe is None:
+                continue
+            if col not in self.dataframe.columns:
+                continue
+    
+            try:
+                y = self.dataframe[col]#.to_numpy()
+            except Exception as e:
+                print(f"Error accessing column {col}: {e}")
+                continue
+    
+            ## Check for length mismatch (shouldn't happen with Polars, but good to verify)
+            #if len(self.x_array) != len(y):
+            #    print(f"Length mismatch in column {col}, skipping")
+            #    continue
+    
+            full_label = f"{col}"
+            short_label = (
+                full_label if len(full_label) <= max_label_len
+                else full_label[:max_label_len - 1] + "…"
+            )
+            color = cmap(norm(i))
+            line, = self.ax.plot(
+                self.x_array, y,
+                label=short_label,
+                color=color,
+                linewidth=1.4,
+                alpha=0.9,
+            )
+            plotted_lines.append(line)
+            full_labels.append(full_label)
+            plotted_any = True
+            i += 1
 
         if plotted_any:
             legend = self.ax.legend(
@@ -339,13 +375,14 @@ class PolarsPlotWidget(QWidget):
                 handletextpad=0.6,
                 borderaxespad=0.2,
                 loc="upper left",
-                bbox_to_anchor=(1.02, 1.0),  # right top
+                bbox_to_anchor=(1.02, 1.0),
                 borderpad=0.0,
             )
             for text in legend.get_texts():
                 text.set_color("#333333")
 
-            self.ax.set_xlabel("wavelength", fontsize=8)
+            # Use first column name as x-axis label
+            self.ax.set_xlabel(self.dataframe.columns[0], fontsize=8)
             self.ax.set_ylabel("photometric value", fontsize=8)
 
             # Allocate space for the right legend
@@ -353,11 +390,11 @@ class PolarsPlotWidget(QWidget):
         else:
             self.figure.subplots_adjust(right=0.98)
 
-        # --- Hover tooltip (no mplcursors) ---
+        # --- Hover tooltip ---
         annot = self.ax.annotate(
             "",
             xy=(0, 0),
-            xytext=(10, 10),
+            xytext=(8, 8),
             textcoords="offset points",
             bbox=dict(boxstyle="round,pad=0.3", fc="#333333", ec="#CCCCCC", lw=0.5),
             color="#FFFFFF",
@@ -370,7 +407,7 @@ class PolarsPlotWidget(QWidget):
             Handle hover events to display tooltips.
 
             This function checks if the mouse is over a line, and if so, displays
-            an annotation with the label of the line.
+            an annotation with the column name.
             """
             if event.inaxes != self.ax:
                 annot.set_visible(False)
@@ -386,7 +423,20 @@ class PolarsPlotWidget(QWidget):
                     x, y = x_data[idx], y_data[idx]
                     annot.xy = (x, y)
                     annot.set_text(label)
-                    annot.set_visible(True)
+                    line_color = line.get_color()
+                    r, g, b, a = line_color[:4]
+                    
+                    # Create darker edge by reducing lightness while preserving hue
+                    # Using a simple method: reduce each channel by 30%
+                    dark_r = max(0, r - 0.1)
+                    dark_g = max(0, g - 0.1)
+                    dark_b = max(0, b - 0.1)  # Slightly more reduction for blue
+                    edge_color = (dark_r, dark_g, dark_b, 1.0)
+                    bg_color = (dark_r, dark_g, dark_b, 0.66)
+                    annot.set_color("#FFFFFF")  # For background if needed
+                    annot.set_bbox(dict(boxstyle="round,pad=0.3", facecolor=bg_color, edgecolor = edge_color, lw=0.5))  # Slightly transparent
+                    
+                    annot.set_visible(True)                   
                     visible = True
                     break
 
@@ -399,9 +449,11 @@ class PolarsPlotWidget(QWidget):
         if hasattr(self, '_hover_cid'):
             self.figure.canvas.mpl_disconnect(self._hover_cid)
         self._hover_cid = self.figure.canvas.mpl_connect("motion_notify_event", on_hover)
+
         self.figure.tight_layout(pad=1.0, w_pad=2.5, h_pad=3.0)
         self.canvas.draw_idle()
 
+    # ------------------------------------------------------------------
     def _create_context_menu(self) -> QMenu:
         """
         Create and return a context menu for right-click actions.
@@ -434,7 +486,7 @@ class PolarsPlotWidget(QWidget):
         if not hasattr(self, "_context_cid"):
             self._context_cid = self.canvas.mpl_connect("button_press_event", self._show_context_menu)
     
-    # ------------------------------------------------------------------
+
     def _show_context_menu(self, event) -> None:
         """
         Show the context menu on right-click exactly at the mouse position.
@@ -515,19 +567,20 @@ class PolarsPlotWidget(QWidget):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
 
-    df1 = pl.DataFrame({
-        "Wavelength": [400, 500, 600, 700],
-        "A": [1, 2, 3, 4],
-        "B": [2, 3, 4, 5],
-    })
-    df2 = pl.DataFrame({
-        "Wavelength": [400, 500, 600, 700],
-        "B": [1, 2, 1, 3],
-        "C": [3, 3, 2, 1],
+    wavelengths = np.arange(400, 801, 1)
+
+    data = {}
+    for i, col_name in zip(range(1, 21), [chr(c) for c in range(66, 86)]):  # B to V
+        data[col_name] = np.random.random(size=len(wavelengths))*np.random.randint(0, 3, 1)+np.random.randint(0, 50, 1)
+    
+    # Create DataFrame with Wavelength as first column
+    df_large = pl.DataFrame({
+        "Wavelength": wavelengths,
+        **data
     })
 
     widget = PolarsPlotWidget()
-    widget.set_data_dict({"df1": df1, "df2": df2})
+    widget.set_dataframe(df_large)
     widget.resize(1000, 600)
     widget.show()
 
