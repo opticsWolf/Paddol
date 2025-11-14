@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Created on Wed Nov 12 19:56:12 2025
+PADDOL: Python Advanced Design & Dispersion Optimization Lab
+Copyright (c) 2025 opticsWolf
 
-@author: Frank
+SPDX-License-Identifier: LGPL-3.0-or-later
 """
 
 from PySide6.QtWidgets import (QApplication, QMainWindow, QDockWidget,
@@ -519,4 +520,5 @@ def main():
         pass
 
 if __name__ == "__main__":
+
     main()
