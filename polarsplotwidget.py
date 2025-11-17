@@ -16,34 +16,30 @@ from typing import List, Dict, Any, Optional
 import polars as pl
 import numpy as np
 import matplotlib.pyplot as plt
-#import matplotlib.cm as cm
-import matplotlib.colors as mcolors
+from matplotlib.ticker import AutoMinorLocator
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.backends.backend_qt5 import NavigationToolbar2QT as NavigationToolbar
 
-from PyQt5.QtCore import QItemSelectionModel, QPoint, Qt
+from PyQt5.QtCore import QItemSelectionModel, QPoint, Qt, QItemSelection
 
-from PyQt5.QtGui import QStandardItemModel, QStandardItem, QIcon, QImage, QPixmap
+from PyQt5.QtGui import (QStandardItemModel, QStandardItem, QIcon, 
+                         QImage, QPixmap, QColor, QPainter, QPen
+                         )
 
-from PyQt5.QtWidgets import (
-    QWidget,
-    QListView,
-    QHBoxLayout,
-    QVBoxLayout,
-    QApplication,
-    QAbstractItemView,
-    QMenu,
-    QAction,
-    QSplitter,
-    QGroupBox,
-    QSizePolicy
-    )
+from PyQt5.QtWidgets import (QWidget, QListView, QHBoxLayout, QVBoxLayout,
+                             QApplication, QAbstractItemView, QMenu, QAction,
+                             QSplitter, QGroupBox, QSizePolicy, QComboBox,
+                             QLabel
+                             )
 
 from qt_icons import ICON_DICT, scan_icons_folder
 
+
+COLORMAPS = ("Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Managua", "Berlin", "Vanimo", "Turbo", "Terrain", "Rainbow")
+
 class CustomNavigationToolbar(NavigationToolbar):
     """
-    Matplotlib navigation toolbar with user‑supplied icons.
+    NavigationToolbar with custom icons, layout, spacers and XY readout.
 
     The constructor expects the path to a directory that contains PNG files
     named exactly after the button names that should be replaced.
@@ -60,34 +56,118 @@ class CustomNavigationToolbar(NavigationToolbar):
         the toolbar keeps the original icons.
     """
 
-    def __init__(self, canvas: Any, parent: Any = None, icons_dir: str | None = None) -> None:
-        self._custom_icons: Dict[str, str] = (
-            scan_icons_folder(icons_dir) if icons_dir else {}
+    def __init__(self, canvas, parent=None, icons_dir=None):
+        # Custom icon handling (your existing logic)
+        self._custom_icons = scan_icons_folder(icons_dir) if icons_dir else {}
+        original_items = list(NavigationToolbar.toolitems)
+        new_items = []
+        
+        skip = {"Back", "Forward", "Subplots", "Customize"}
+        for name, tooltip, image, command in original_items:
+            if name in self._custom_icons and name not in skip:
+                icon_path = Path(self._custom_icons[name])
+                image = str(icon_path.parent / icon_path.stem)
+                new_items.append((name, tooltip, image, command))
+
+        self.__class__.toolitems = new_items
+        super().__init__(canvas, parent)
+        self.__class__.toolitems = original_items
+
+        # ===========================
+        # Create Custom Toolbar Row
+        # ===========================
+        container = QWidget(self)
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(4, 0, 4, 0)
+        layout.setSpacing(8)
+
+        # Spacer left of tools
+        left_spacer = QWidget()
+        left_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        layout.addWidget(left_spacer, 2)
+
+        self.parent = parent
+
+        # Add colormap selector
+        label_cmap = QLabel("Colormap:")
+        self.cmap_selector = QComboBox()
+        for name in COLORMAPS:
+            self.cmap_selector.addItem(name)
+        self.cmap_selector.currentTextChanged.connect(self._set_new_colormap)
+
+        layout.addWidget(label_cmap)
+        layout.addWidget(self.cmap_selector)
+
+        # Spacer between controls and XY
+        middle_spacer = QWidget()
+        middle_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        layout.addWidget(middle_spacer)
+
+        # Create XY label but don't show coordinates initially
+        self.xy_label = QLabel(" ", self)
+        self.addWidget(self.xy_label)
+
+        # Connect mouse move
+        canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
+        # Connect enter/leave events
+        canvas.enterEvent = self._on_enter
+        canvas.leaveEvent = self._on_leave
+        
+        self._hovering = False
+
+        # Add custom widget to the toolbar
+        self.addWidget(container)
+
+        # Connect signals
+        canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
+
+    # -------------------------------------------------------
+    def set_message(self, s: str) -> None:
+        """Suppress the default Matplotlib XY coordinates."""
+        # Prevent the inherited toolbar from showing coordinates.
+        return
+
+    def _on_enter(self, event):
+        """Mouse entered the canvas: start showing coordinates."""
+        self._hovering = True
+        #self.xy_label.setText("x: –, y: –")
+        self.xy_label.setText("")
+
+    def _on_leave(self, event):
+        """Mouse left the canvas: hide coordinates."""
+        self._hovering = False
+        self.xy_label.setText(" ")
+
+    def _on_mouse_move(self, event):
+        """Update XY label with dynamic decimal precision based on zoom level using NumPy."""
+        if not self._hovering or event.xdata is None or event.ydata is None:
+            #self.xy_label.setText("x: –, y: –")
+            self.xy_label.setText("")
+            return
+    
+        ax = event.inaxes
+        if ax is None:
+            #self.xy_label.setText("x: –, y: –")
+            self.xy_label.setText("")
+            return
+    
+        # Compute dynamic precision based on axis range
+        xrange = ax.get_xlim()[1] - ax.get_xlim()[0]
+        yrange = ax.get_ylim()[1] - ax.get_ylim()[0]
+    
+        xdigits = max(1, -int(np.floor(np.log10(xrange))) + 2)
+        ydigits = max(1, -int(np.floor(np.log10(yrange))) + 2)
+    
+        xlabel = ax.get_xlabel() or "x"
+        ylabel = ax.get_ylabel() or "y"
+    
+        self.xy_label.setText(
+            f"{xlabel}: {event.xdata:.{xdigits}f}, {ylabel}: {event.ydata:.{ydigits}f}"
         )
 
-        # Copy original toolitems so we don't mutate the class attribute globally
-        original_items = list(NavigationToolbar.toolitems)  # type: ignore[attr-defined]
-        new_items = []
-
-        for name, tooltip, image, command in original_items:
-            if name in self._custom_icons:
-                # Use the custom icon name (without extension)
-                image = str(Path(self._custom_icons[name]).parent / Path(self._custom_icons[name]).stem)
-            new_items.append((name, tooltip, image, command))
-
-        # Temporarily override the class attribute for this instance only
-        self.__class__.toolitems = new_items  # type: ignore[assignment]
-        super().__init__(canvas, parent)
-        self.__class__.toolitems = original_items  # restore
-
-        # Tell the toolbar where to look for icons
-        if icons_dir:
-            self.icon_dir = str(Path(icons_dir).resolve())
-
-        # Store initial view limits when first shown
-        self._initial_limits: Dict[str, List[float]] = {}
 
     def home(self):
+        """Overwriting the default Matplotlib Home Function."""
         if not self.canvas.figure.get_axes():
             return
     
@@ -116,6 +196,18 @@ class CustomNavigationToolbar(NavigationToolbar):
         # Redraw the canvas
         self.canvas.draw()
         
+    def _set_new_colormap(self, name: str) -> None:
+        """
+        Look up the colormap from the predefined dictionary and pass
+        it back to the parent widget.
+        """
+        if name in COLORMAPS:
+            # return the colormap to parent if it implements setter
+            #parent = self.parent()
+            if hasattr(self.parent, "set_new_colormap"):
+                self.parent.set_new_colormap(name.lower())
+
+        
 class PolarsPlotWidget(QWidget):
     """
     A widget that displays a single Polars DataFrame as a Matplotlib plot.
@@ -130,23 +222,31 @@ class PolarsPlotWidget(QWidget):
     y_arrays (Dict[str, np.ndarray]): Mapping of column names to their NumPy arrays for plotting.
     """
 
-    def __init__(self, parent: Any = None) -> None:
+    def __init__(self, parent: Any = None, current_map: str = "viridis") -> None:
         """Initialize the widget with a horizontal split view for columns and plot.
-    
+
         The layout consists of two main areas in group boxes arranged horizontally using QSplitter.
         Each group box is wrapped in an additional QVBoxLayout for better spacing control and
         future extensibility. The left area shows available columns to select from, while the right
         area displays the plot with navigation toolbar below it. Both panes are resizable by
         dragging the splitter handle.
-    
+
         Args:
             parent: Optional parent widget. Defaults to None.
+            current_map: Name of the colormap to use initially for plots. Defaults to "viridis".
         """
         super().__init__(parent)
-    
+
         self.dataframe: Optional[pl.DataFrame] = None
         self.x_array: np.ndarray = np.array([])
-    
+        self.column_colors = {}
+        self.current_cmap = current_map
+
+        # Initialize UI components
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        """Set up the main user interface layout."""
         # Create horizontal splitter for resizable panes
         main_splitter = QSplitter(Qt.Horizontal)
         main_splitter.setOpaqueResize(True)  # Optimize for resizing performance
@@ -247,24 +347,89 @@ class PolarsPlotWidget(QWidget):
         # Update column selection UI with available columns (excluding x-axis)
         self._update_column_list()
 
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------   
     def _update_column_list(self) -> None:
-        """Update the column list view to show all available columns (excluding x-axis)."""
-        if not hasattr(self, 'dataframe') or self.dataframe is None:
+        if self.dataframe is not None:
+            if self.dataframe.is_empty():
+                return
+        else:
             return
-
-        cols = sorted([col for col in self.dataframe.columns[1:]])
-
+    
+        cols = sorted(self.dataframe.columns[1:])
+    
         self.col_model.clear()
+
+        # Build color map
+        n_columns = len(self.dataframe.columns)
+        max_colors = min(n_columns, 256)
+        cmap = plt.get_cmap(self.current_cmap, max_colors)
+    
+        self.column_colors = {}
+        for i, col in enumerate(self.dataframe.columns):
+            norm_i = i / (max_colors - 1) if max_colors > 1 else 0.5
+            self.column_colors[col] = cmap(norm_i)  # RGBA floats (0-1)
+    
+        # ---- Add items with icons ----
+        icon_size = 12  # small square icon
+    
         for col in cols:
-            self.col_model.appendRow(QStandardItem(col))
+            item = QStandardItem(col)
+    
+            r, g, b, a = self.column_colors[col]
+            qcolor = QColor(int(r * 255), int(g * 255), int(b * 255), int(a * 255))
 
-        # Select all columns initially
-        col_sel_model = self.col_list_view.selectionModel()
-        for row in range(len(cols)):
-            idx = self.col_model.index(row, 0)
-            col_sel_model.select(idx, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+            '''
+            #Round icon
+            pix = QPixmap(icon_size, icon_size)
+            pix.fill(Qt.transparent)
+    
+            pix = QPixmap(icon_size, icon_size)
+            pix.fill(Qt.transparent)
+            
+            p = QPainter(pix)
+            p.setRenderHint(QPainter.Antialiasing, True)
+            p.setBrush(qcolor)
+            p.setPen(Qt.NoPen)
+            p.drawEllipse(0, 0, icon_size, icon_size)
+            p.end()
+            '''
+            #Line Icon
+            icon_w, icon_h = 18, 12
+            pix = QPixmap(icon_w, icon_h)
+            pix.fill(Qt.transparent)
+            
+            p = QPainter(pix)
+            p.setRenderHint(QPainter.Antialiasing, True)
+            
+            pen = QPen(qcolor, 3)
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            
+            y = icon_h // 2
+            p.drawLine(2, y, icon_w - 2, y)
+            p.end()
+            
+            item.setIcon(QIcon(pix))
+            
+            self.col_model.appendRow(item)
 
+        # ---- Select all rows ----
+        sel_model = self.col_list_view.selectionModel()
+        if not cols:
+            return
+    
+        first_idx = self.col_model.index(0, 0)
+        last_idx = self.col_model.index(len(cols) - 1, 0)
+        selection = QItemSelection(first_idx, last_idx)
+    
+        sel_model.select(selection, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+    
+    # ------------------------------------------------------------------
+    def set_new_colormap(self, cmap):
+        self.current_cmap = cmap
+        # Optionally refresh drawings, recolor lines, etc.
+        self._update_column_list()
+        
     # ------------------------------------------------------------------
     def _on_selection_changed(self, *_):
         """Refresh plot when column selection changes."""
@@ -286,19 +451,27 @@ class PolarsPlotWidget(QWidget):
         # Fine grid
         self.ax.grid(True, color="#bcbcbc", linewidth=0.5, alpha=0.5)
         self.ax.tick_params(
-            colors="#444444",
-            labelsize=8,
+            colors="#555555",
+            labelsize=6.5,
             width=0.6,
             length=3,
             pad=2,
         )
+        self.ax.xaxis.set_minor_locator(AutoMinorLocator())
+        self.ax.yaxis.set_minor_locator(AutoMinorLocator())
+        self.ax.tick_params(
+            which='minor',
+            width=0.4,      # Slightly thinner than major ticks
+            length=1.5,     # Shorter than major ticks
+            color="#999999" # Lighter color for subticks
+            )
     
-        self.ax.xaxis.label.set_color("#333333")
-        self.ax.yaxis.label.set_color("#333333")
-        self.ax.xaxis.label.set_size(8)
-        self.ax.yaxis.label.set_size(8)
+        self.ax.xaxis.label.set_color("#555555")
+        self.ax.yaxis.label.set_color("#555555")
+        self.ax.xaxis.label.set_size(7)
+        self.ax.yaxis.label.set_size(7)
         self.ax.title.set_color("#222222")
-        self.ax.title.set_size(9)
+        self.ax.title.set_size(8)
 
     # ------------------------------------------------------------------
     def _update_plot(self) -> None:
@@ -318,13 +491,6 @@ class PolarsPlotWidget(QWidget):
         self.ax.clear()
         
         self._apply_modern_style()
-        
-        # Gradient color map
-        cmap = plt.colormaps["viridis"]
-        total_series = sum(
-            1 for c in selected_cols if c in self.dataframe.columns
-            )
-        norm = mcolors.Normalize(vmin=0, vmax=max(total_series - 1, 1))
         
         plotted_any = False
         plotted_lines: List[Any] = []
@@ -353,12 +519,13 @@ class PolarsPlotWidget(QWidget):
                 full_label if len(full_label) <= max_label_len
                 else full_label[:max_label_len - 1] + "…"
             )
-            color = cmap(norm(i))
+
+            color = self.column_colors.get(col, '#000000')
             line, = self.ax.plot(
                 self.x_array, y,
                 label=short_label,
                 color=color,
-                linewidth=1.4,
+                linewidth=1.25,
                 alpha=0.9,
             )
             plotted_lines.append(line)
@@ -381,14 +548,18 @@ class PolarsPlotWidget(QWidget):
             for text in legend.get_texts():
                 text.set_color("#333333")
 
-            # Use first column name as x-axis label
-            self.ax.set_xlabel(self.dataframe.columns[0], fontsize=8)
-            self.ax.set_ylabel("photometric value", fontsize=8)
-
+            # Axis label use first column from dataframe
+            x_axes_label = self.dataframe.columns[0]
+                      
             # Allocate space for the right legend
             self.figure.subplots_adjust(right=0.80)
         else:
+            # Axis label use defaults if no data is plotted
+            x_axes_label = "x-axes"
             self.figure.subplots_adjust(right=0.98)
+        y_axes_label = "photometric value"
+        self.ax.set_xlabel(self.dataframe.columns[0])
+        self.ax.set_ylabel(y_axes_label)
 
         # --- Hover tooltip ---
         annot = self.ax.annotate(
@@ -575,7 +746,7 @@ if __name__ == "__main__":
     
     # Create DataFrame with Wavelength as first column
     df_large = pl.DataFrame({
-        "Wavelength": wavelengths,
+        "Wavelength / nm": wavelengths,
         **data
     })
 
