@@ -33,179 +33,10 @@ from PyQt5.QtWidgets import (QWidget, QListView, QHBoxLayout, QVBoxLayout,
                              )
 
 from qt_icons import ICON_DICT, scan_icons_folder
-
+from qt_plottoolbar import CSVPlottoolbar
+from plotstyler import PlotStyler
 
 COLORMAPS = ("Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Managua", "Berlin", "Vanimo", "Turbo", "Terrain", "Rainbow")
-
-class CustomNavigationToolbar(NavigationToolbar):
-    """
-    NavigationToolbar with custom icons, layout, spacers and XY readout.
-
-    The constructor expects the path to a directory that contains PNG files
-    named exactly after the button names that should be replaced.
-    For example, ``icons/Home.png`` will replace the default “Home” icon.
-
-    Parameters
-    ----------
-    canvas : matplotlib.figure.FigureCanvasBase
-        Matplotlib canvas that the toolbar controls.
-    parent : QWidget | None
-        Optional Qt parent widget.
-    icons_dir : str | None
-        Path to a directory with PNG files.  If ``None`` (default),
-        the toolbar keeps the original icons.
-    """
-
-    def __init__(self, canvas, parent=None, icons_dir=None):
-        # Custom icon handling (your existing logic)
-        self._custom_icons = scan_icons_folder(icons_dir) if icons_dir else {}
-        original_items = list(NavigationToolbar.toolitems)
-        new_items = []
-        
-        skip = {"Back", "Forward", "Subplots", "Customize"}
-        for name, tooltip, image, command in original_items:
-            if name in self._custom_icons and name not in skip:
-                icon_path = Path(self._custom_icons[name])
-                image = str(icon_path.parent / icon_path.stem)
-                new_items.append((name, tooltip, image, command))
-
-        self.__class__.toolitems = new_items
-        super().__init__(canvas, parent)
-        self.__class__.toolitems = original_items
-
-        # ===========================
-        # Create Custom Toolbar Row
-        # ===========================
-        container = QWidget(self)
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(4, 0, 4, 0)
-        layout.setSpacing(8)
-
-        # Spacer left of tools
-        left_spacer = QWidget()
-        left_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        layout.addWidget(left_spacer, 2)
-
-        self.parent = parent
-
-        # Add colormap selector
-        label_cmap = QLabel("Colormap:")
-        self.cmap_selector = QComboBox()
-        for name in COLORMAPS:
-            self.cmap_selector.addItem(name)
-        self.cmap_selector.currentTextChanged.connect(self._set_new_colormap)
-
-        layout.addWidget(label_cmap)
-        layout.addWidget(self.cmap_selector)
-
-        # Spacer between controls and XY
-        middle_spacer = QWidget()
-        middle_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        layout.addWidget(middle_spacer)
-
-        # Create XY label but don't show coordinates initially
-        self.xy_label = QLabel(" ", self)
-        self.addWidget(self.xy_label)
-
-        # Connect mouse move
-        canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
-        # Connect enter/leave events
-        canvas.enterEvent = self._on_enter
-        canvas.leaveEvent = self._on_leave
-        
-        self._hovering = False
-
-        # Add custom widget to the toolbar
-        self.addWidget(container)
-
-        # Connect signals
-        canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
-
-    # -------------------------------------------------------
-    def set_message(self, s: str) -> None:
-        """Suppress the default Matplotlib XY coordinates."""
-        # Prevent the inherited toolbar from showing coordinates.
-        return
-
-    def _on_enter(self, event):
-        """Mouse entered the canvas: start showing coordinates."""
-        self._hovering = True
-        #self.xy_label.setText("x: –, y: –")
-        self.xy_label.setText("")
-
-    def _on_leave(self, event):
-        """Mouse left the canvas: hide coordinates."""
-        self._hovering = False
-        self.xy_label.setText(" ")
-
-    def _on_mouse_move(self, event):
-        """Update XY label with dynamic decimal precision based on zoom level using NumPy."""
-        if not self._hovering or event.xdata is None or event.ydata is None:
-            #self.xy_label.setText("x: –, y: –")
-            self.xy_label.setText("")
-            return
-    
-        ax = event.inaxes
-        if ax is None:
-            #self.xy_label.setText("x: –, y: –")
-            self.xy_label.setText("")
-            return
-    
-        # Compute dynamic precision based on axis range
-        xrange = ax.get_xlim()[1] - ax.get_xlim()[0]
-        yrange = ax.get_ylim()[1] - ax.get_ylim()[0]
-    
-        xdigits = max(1, -int(np.floor(np.log10(xrange))) + 2)
-        ydigits = max(1, -int(np.floor(np.log10(yrange))) + 2)
-    
-        xlabel = ax.get_xlabel() or "x"
-        ylabel = ax.get_ylabel() or "y"
-    
-        self.xy_label.setText(
-            f"{xlabel}: {event.xdata:.{xdigits}f}, {ylabel}: {event.ydata:.{ydigits}f}"
-        )
-
-
-    def home(self):
-        """Overwriting the default Matplotlib Home Function."""
-        if not self.canvas.figure.get_axes():
-            return
-    
-        # Get data range from all lines in the plot
-        x_data = []
-        y_data = []
-        for ax in self.canvas.figure.get_axes():
-            for line in ax.lines:
-                x, y = line.get_data()
-                x_data.extend(x)
-                y_data.extend(y)
-    
-        # Compute min and max values
-        x_min, x_max = min(x_data), max(x_data)
-        y_min, y_max = min(y_data), max(y_data)
-    
-        # Add a small margin (5% of the data range)
-        x_margin = 0.05 * (x_max - x_min) if x_max > x_min else 0.1
-        y_margin = 0.05 * (y_max - y_min) if y_max > y_min else 0.1
-    
-        # Apply limits with margins
-        for ax in self.canvas.figure.get_axes():
-            ax.set_xlim(x_min - x_margin, x_max + x_margin)
-            ax.set_ylim(y_min - y_margin, y_max + y_margin)
-    
-        # Redraw the canvas
-        self.canvas.draw()
-        
-    def _set_new_colormap(self, name: str) -> None:
-        """
-        Look up the colormap from the predefined dictionary and pass
-        it back to the parent widget.
-        """
-        if name in COLORMAPS:
-            # return the colormap to parent if it implements setter
-            #parent = self.parent()
-            if hasattr(self.parent, "set_new_colormap"):
-                self.parent.set_new_colormap(name.lower())
 
         
 class PolarsPlotWidget(QWidget):
@@ -271,7 +102,7 @@ class PolarsPlotWidget(QWidget):
         # Wrap the group box in an outer vbox layout for more control
         left_wrapper = QWidget()
         left_layout = QVBoxLayout(left_wrapper)
-        left_layout.setContentsMargins(0, 0, 0, 0)  # No margins since col_group has its own
+        left_layout.setContentsMargins(4, 4, 4, 4)  # No margins since col_group has its own
         left_layout.addWidget(col_group)
     
         # Set size policy for the wrapper to take available space but not more than needed
@@ -283,21 +114,20 @@ class PolarsPlotWidget(QWidget):
         # Right pane: Plot group box with outer vbox layout
         plot_group = QGroupBox("Plot View")
         plot_layout = QVBoxLayout(plot_group)
-        plot_layout.setContentsMargins(8, 8, 8, 8)
+        plot_layout.setContentsMargins(8, 8, 8, 0)
     
         # Initialize matplotlib components
-        self.figure, self.ax = plt.subplots(figsize=(5, 4))
+        self.figure, self.ax = plt.subplots(figsize=(8, 5), dpi=100)
         self.canvas = FigureCanvasQTAgg(self.figure)
-        self.toolbar = CustomNavigationToolbar(self.canvas, self, icons_dir="src/icons")
-        self._init_context_menu()
+        self.toolbar = CSVPlottoolbar(self.canvas, self)#, icons_dir="src/icons")
     
-        plot_layout.addWidget(self.canvas)
-        plot_layout.addWidget(self.toolbar)
+        plot_layout.addWidget(self.canvas, 1)
+        plot_layout.addWidget(self.toolbar, 0)
     
         # Wrap the group box in an outer vbox layout
         right_wrapper = QWidget()
         right_layout = QVBoxLayout(right_wrapper)
-        right_layout.setContentsMargins(0, 0, 0, 0)  # No margins since plot_group has its own
+        right_layout.setContentsMargins(4, 4, 4, 4)  # No margins since plot_group has its own
         right_layout.addWidget(plot_group)
     
         # Set size policy for the wrapper to take available space
@@ -307,13 +137,41 @@ class PolarsPlotWidget(QWidget):
     
         # Set up main layout
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setContentsMargins(4, 4, 4, 4)
         main_layout.addWidget(main_splitter)
     
         # Set initial sizes (column list 25% / plot 75%) using relative ratios
         #main_splitter.setSizes([1, 5])  # Ratio of left to right
     
+        self.current_style = 'grey'  # Default to light theme light or dark
+        self.plot_styler = PlotStyler()
+    
         self._apply_modern_style()
+
+        # ===== Style =====
+        self.setStyleSheet("""
+           QGroupBox {
+               font-weight: bold;
+               border: 1px solid #AAAAAA;
+               border-radius: 6px;
+               margin-top: 8px;
+           }
+           QGroupBox::title {
+               subcontrol-origin: margin;
+               left: 10px;
+               padding: 0 4px;
+           }
+           QPushButton {
+               padding: 4px 10px;
+           }
+           QLabel {
+               min-width: 80px;
+           }
+           QListWidget{
+               border: 1px solid #AAAAAA;
+               border: 1px solid #AAAAAA;
+           }
+       """)
 
     # ------------------------------------------------------------------
     def set_dataframe(self, df: pl.DataFrame) -> None:
@@ -345,6 +203,7 @@ class PolarsPlotWidget(QWidget):
             return
 
         # Update column selection UI with available columns (excluding x-axis)
+        self._apply_modern_style()
         self._update_column_list()
 
     # ------------------------------------------------------------------   
@@ -436,42 +295,45 @@ class PolarsPlotWidget(QWidget):
         self._update_plot()
 
     # ------------------------------------------------------------------
+    # def _apply_modern_style(self) -> None:
+    #     """Apply a tight, modern, minimal look to the plot."""
+    #     self.figure.set_facecolor("#fafafa")
+    #     self.ax.set_facecolor("#dadada")
+    
+    #     # Simplified, neutral axes
+    #     for spine in self.ax.spines.values():
+    #         spine.set_color("#bcbcbc")
+    #         spine.set_linewidth(0.6)
+    #     #self.ax.spines["top"].set_visible(False)
+    #     #self.ax.spines["right"].set_visible(False)
+    
+    #     # Fine grid
+    #     self.ax.grid(True, color="#bcbcbc", linewidth=0.5, alpha=0.5)
+    #     self.ax.tick_params(
+    #         colors="#555555",
+    #         labelsize=6.5,
+    #         width=0.6,
+    #         length=3,
+    #         pad=2,
+    #     )
+    #     self.ax.xaxis.set_minor_locator(AutoMinorLocator())
+    #     self.ax.yaxis.set_minor_locator(AutoMinorLocator())
+    #     self.ax.tick_params(
+    #         which='minor',
+    #         width=0.4,      # Slightly thinner than major ticks
+    #         length=1.5,     # Shorter than major ticks
+    #         color="#999999" # Lighter color for subticks
+    #         )
+    
+    #     self.ax.xaxis.label.set_color("#555555")
+    #     self.ax.yaxis.label.set_color("#555555")
+    #     self.ax.xaxis.label.set_size(7)
+    #     self.ax.yaxis.label.set_size(7)
+    #     self.ax.title.set_color("#222222")
+    #     self.ax.title.set_size(8)
+
     def _apply_modern_style(self) -> None:
-        """Apply a tight, modern, minimal look to the plot."""
-        self.figure.set_facecolor("#fafafa")
-        self.ax.set_facecolor("#dadada")
-    
-        # Simplified, neutral axes
-        for spine in self.ax.spines.values():
-            spine.set_color("#bcbcbc")
-            spine.set_linewidth(0.6)
-        #self.ax.spines["top"].set_visible(False)
-        #self.ax.spines["right"].set_visible(False)
-    
-        # Fine grid
-        self.ax.grid(True, color="#bcbcbc", linewidth=0.5, alpha=0.5)
-        self.ax.tick_params(
-            colors="#555555",
-            labelsize=6.5,
-            width=0.6,
-            length=3,
-            pad=2,
-        )
-        self.ax.xaxis.set_minor_locator(AutoMinorLocator())
-        self.ax.yaxis.set_minor_locator(AutoMinorLocator())
-        self.ax.tick_params(
-            which='minor',
-            width=0.4,      # Slightly thinner than major ticks
-            length=1.5,     # Shorter than major ticks
-            color="#999999" # Lighter color for subticks
-            )
-    
-        self.ax.xaxis.label.set_color("#555555")
-        self.ax.yaxis.label.set_color("#555555")
-        self.ax.xaxis.label.set_size(7)
-        self.ax.yaxis.label.set_size(7)
-        self.ax.title.set_color("#222222")
-        self.ax.title.set_size(8)
+        self.plot_styler.apply_style(self.current_style, self.canvas, self.ax)
 
     # ------------------------------------------------------------------
     def _update_plot(self) -> None:
@@ -489,7 +351,6 @@ class PolarsPlotWidget(QWidget):
 
         # Clear and set up plot
         self.ax.clear()
-        
         self._apply_modern_style()
         
         plotted_any = False
@@ -534,19 +395,19 @@ class PolarsPlotWidget(QWidget):
             i += 1
 
         if plotted_any:
-            legend = self.ax.legend(
-                fontsize=7,
-                frameon=False,
-                labelcolor="#f0f0f0",
-                handlelength=2.8,
-                handletextpad=0.6,
-                borderaxespad=0.2,
-                loc="upper left",
-                bbox_to_anchor=(1.02, 1.0),
-                borderpad=0.0,
-            )
-            for text in legend.get_texts():
-                text.set_color("#333333")
+            # legend = self.ax.legend(
+            #     fontsize=7,
+            #     frameon=False,
+            #     labelcolor="#f0f0f0",
+            #     handlelength=2.8,
+            #     handletextpad=0.6,
+            #     borderaxespad=0.2,
+            #     loc="upper left",
+            #     bbox_to_anchor=(1.02, 1.0),
+            #     borderpad=0.0,
+            # )
+            # for text in legend.get_texts():
+            #     text.set_color("#333333")
 
             # Axis label use first column from dataframe
             x_axes_label = self.dataframe.columns[0]
@@ -569,7 +430,7 @@ class PolarsPlotWidget(QWidget):
             textcoords="offset points",
             bbox=dict(boxstyle="round,pad=0.3", fc="#333333", ec="#CCCCCC", lw=0.5),
             color="#FFFFFF",
-            fontsize=8,
+            fontsize=12,
             visible=False,
         )
 
@@ -613,7 +474,7 @@ class PolarsPlotWidget(QWidget):
 
             if not visible and annot.get_visible():
                 annot.set_visible(False)
-
+        
             self.canvas.draw_idle()
 
         # Disconnect previous event handler to avoid multiple connections
@@ -623,115 +484,6 @@ class PolarsPlotWidget(QWidget):
 
         self.figure.tight_layout(pad=1.0, w_pad=2.5, h_pad=3.0)
         self.canvas.draw_idle()
-
-    # ------------------------------------------------------------------
-    def _create_context_menu(self) -> QMenu:
-        """
-        Create and return a context menu for right-click actions.
-
-        Returns:
-            QMenu: A context menu with actions to copy the image, save it, or reset/zoom home.
-        """
-        context_menu = QMenu(self)
-
-        # Copy action
-        copy_action = QAction(QIcon(ICON_DICT["Copy"]), "Copy Image", self)
-        copy_action.triggered.connect(self._copy_image)
-        context_menu.addAction(copy_action)
-
-        # Save action
-        save_action = QAction(QIcon(ICON_DICT["Save"]), "Save Image...", self)
-        save_action.triggered.connect(self._save_image)
-        context_menu.addAction(save_action)
-
-        return context_menu
-
-    def _init_context_menu(self) -> None:
-        """
-        Initialize and connect the right-click context menu for the canvas.
-        """
-        # Create menu once
-        self.context_menu = self._create_context_menu()
-    
-        # Connect mouse button event to show the menu
-        if not hasattr(self, "_context_cid"):
-            self._context_cid = self.canvas.mpl_connect("button_press_event", self._show_context_menu)
-    
-
-    def _show_context_menu(self, event) -> None:
-        """
-        Show the context menu on right-click exactly at the mouse position.
-    
-        Args:
-            event: Matplotlib mouse event.
-        """
-        if event.button == 3:  # Right-click
-            # Matplotlib coordinates (origin bottom-left)
-            x = int(event.x)
-            y = int(event.y)
-    
-            # Convert to Qt coordinates (origin top-left)
-            y = self.canvas.height() - y
-            global_pos = self.canvas.mapToGlobal(QPoint(x, y))
-    
-            # Show menu
-            self.context_menu.exec_(global_pos)
-
-    def _copy_image(self) -> None:
-        """
-        Copy the current Matplotlib figure to the system clipboard.
-    
-        This method renders the figure to a PNG in memory, converts it to a QPixmap,
-        and sets it on the Qt clipboard. Works reliably with FigureCanvasQTAgg.
-        """
-        if not hasattr(self, 'figure') or self.figure is None:
-            return  # No figure available
-    
-        try:
-            # Save figure to a bytes buffer in PNG format
-            buffer = io.BytesIO()
-            self.figure.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
-            buffer.seek(0)
-            img_data = buffer.getvalue()
-    
-            # Convert bytes to QImage
-            qimage = QImage.fromData(img_data)
-            if qimage.isNull():
-                return  # Invalid image
-    
-            # Convert QImage to QPixmap and copy to clipboard
-            pixmap = QPixmap.fromImage(qimage)
-            clipboard = QApplication.clipboard()
-            clipboard.setPixmap(pixmap)
-        except Exception as e:
-            print(f"Failed to copy image to clipboard: {e}")
-
-    def _save_image(self) -> None:
-        """
-        Save the current figure to a file.
-
-        This action displays a save dialog and saves the current image with high quality.
-        """
-        from PyQt5.QtWidgets import QFileDialog
-
-        # Set up file dialog options
-        options = QFileDialog.Options()
-        file_name, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Image",
-            "",
-            "PNG Images (*.png);;JPEG Images (*.jpg *.jpeg);;All Files (*)",
-            options=options
-        )
-
-        if file_name:
-            # Extract extension from file name
-            ext = file_name.split('.')[-1].lower()
-            if ext not in ['png', 'jpg', 'jpeg']:
-                file_name += '.png'  # Default to PNG
-
-            # Save with high DPI for quality
-            self.figure.savefig(file_name, dpi=300)
 
 
 # ----------------------------------------------------------------------
