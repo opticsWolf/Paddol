@@ -1,11 +1,5 @@
 # -*- coding: utf-8 -*-
 """
-Created on Mon Nov 17 22:36:03 2025
-
-@author: Frank
-"""
-
-"""
 PADDOL: Python Advanced Design & Dispersion Optimization Lab
 Copyright (c) 2025 opticsWolf
 
@@ -414,4 +408,5 @@ class CSVPlottoolbar(QWidget):
         menu.addAction(QIcon(ICON_DICT["Save"]), "Save plot", self.save_plot)
 
         global_pos = self.canvas.mapToGlobal(pos)
+
         menu.exec_(global_pos)
