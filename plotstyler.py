@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Created on Tue Nov 18 00:27:44 2025
+PADDOL: Python Advanced Design & Dispersion Optimization Lab
+Copyright (c) 2025 opticsWolf
 
-@author: Frank
+SPDX-License-Identifier: LGPL-3.0-or-later
 """
 
 from matplotlib.ticker import AutoMinorLocator
@@ -292,3 +293,4 @@ class PlotStyler:
         self.current_style = style_key
         self.current_style_dict = self.styles.get(style_key, "modern")
         self._apply_plot_style(canvas, axes, self.current_style_dict)
+
