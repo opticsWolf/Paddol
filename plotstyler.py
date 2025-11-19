@@ -5,13 +5,23 @@ Copyright (c) 2025 opticsWolf
 
 SPDX-License-Identifier: LGPL-3.0-or-later
 """
+from typing import Iterable, Any
 
 from matplotlib.ticker import AutoMinorLocator
 
 class PlotStyler:
-    def __init__(self):
-        """Initialize the plot styler with default light theme."""
-        self.current_style = 'light'
+    def __init__(self, current_style:str = "grey"):
+        """Initialize the plot styler with default light theme.
+
+        Sets up default style configurations including:
+        - light theme 
+        - grey theme (default)
+        - dark theme
+        - modern theme
+
+        All themes are stored as dictionaries mapping style parameters to their values.
+        """
+        self.current_style = current_style
         # Define all available styles in a dictionary of dictionaries
         self.styles = {
             'light': {
@@ -43,17 +53,23 @@ class PlotStyler:
                 'ytick.minor.color': None,
 
                 'legend.facecolor': 'white',
-                'legend.edgecolor': 'black'
+                'legend.edgecolor': 'black',
+                
+                'rect_selector.facecolor': '#e0f7fa',
+                'rect_selector.edgecolor': '#26a69a',
+                'rect_selector.alpha': 0.3,
+                'rect_selector.linewidth': 1.2,
+                'rect_selector.linestyle': '-'
             },
             
             'grey': {
-                'figure.facecolor': '#e7e7e7',
-                'figure.edgecolor': '#e7e7e7',
+                'figure.facecolor': '#f6f6f6',
+                'figure.edgecolor': '#f6f6f6',
                 'figure.labelcolor': '#555555',
                 'figure.titlesize': 14,
                 'figure.labelsize': 12,
 
-                'axes.facecolor': '#e9e9e9',
+                'axes.facecolor': '#e5e5e5',
                 'axes.edgecolor': '#a3a3a3',
                 'axes.grid': True,
                 'axes.labelcolor': '#555555',
@@ -74,8 +90,14 @@ class PlotStyler:
                 'xtick.minor.color': None,  # Default to same as tick color
                 'ytick.minor.color': None,
 
-                'legend.facecolor': '#e9e9e9',
-                'legend.edgecolor': '#e0e0e0'
+                'legend.facecolor': '#e5e5e5',
+                'legend.edgecolor': '#a3a3a3',
+                
+                'rect_selector.facecolor': '#d4e6ff',
+                'rect_selector.edgecolor': '#3a5fcd',
+                'rect_selector.alpha': 0.3,
+                'rect_selector.linewidth': 1.2,
+                'rect_selector.linestyle': '-'
             },
             
             'dark': {
@@ -107,7 +129,13 @@ class PlotStyler:
                 'ytick.minor.color': None,
 
                 'legend.facecolor': '#333333',
-                'legend.edgecolor': '#dddddd'
+                'legend.edgecolor': '#dddddd',
+                
+                'rect_selector.facecolor': '#3a3b3d',
+                'rect_selector.edgecolor': '#bbdefb',
+                'rect_selector.alpha': 0.4,
+                'rect_selector.linewidth': 1.2,
+                'rect_selector.linestyle': '-'
             },
             
             'modern': {
@@ -139,7 +167,13 @@ class PlotStyler:
                 'ytick.minor.color': '#999999',
 
                 'legend.facecolor': '#f7f7f7',
-                'legend.edgecolor': '#e0e0e0'
+                'legend.edgecolor': '#e0e0e0',
+                
+                'rect_selector.facecolor': '#f5f5f5',
+                'rect_selector.edgecolor': '#42a5f5',
+                'rect_selector.alpha': 0.3,
+                'rect_selector.linewidth': 1.5,
+                'rect_selector.linestyle': ':'
             }
         }
 
@@ -154,6 +188,45 @@ class PlotStyler:
         """
         return self.styles.get(style_name, self.styles['light'])
 
+    def get_styles(self) -> Iterable[str]:
+        """Returns all available style keys.
+
+        Returns:
+            Iterable[str]: An iterable of available style keys.
+        """
+        return self.styles.keys()
+
+    def apply_style(self, style_key: str, canvas: Any, axes: Any) -> None:
+        """Applies the specified plot style to the given canvas and axes.
+        Args:
+            style_key (str): The key of the style to apply from available styles.
+            canvas: The matplotlib canvas object to which the style will be applied.
+            axes: The matplotlib axes object to which the style will be applied.
+        
+        Returns:
+            None
+        """
+        self.current_style = style_key
+        self.current_style_dict = self.styles.get(style_key, "grey")
+        self._apply_plot_style(canvas, axes, self.current_style_dict)
+
+    def get_rect_selector_style(self):
+        """Extract rectangle selector properties from the style dictionary.
+
+        Args:
+            style_dict: Dictionary containing all style parameters
+
+        Returns:
+            Dictionary with rectangle selector-specific styling
+        """
+        style_dict = self.styles[self.current_style]
+        return {
+            'facecolor': style_dict.get('rect_selector.facecolor'),
+            'edgecolor': style_dict.get('rect_selector.edgecolor'),
+            'alpha': style_dict.get('rect_selector.alpha', 0.3),
+            'linewidth': style_dict.get('rect_selector.linewidth', 1.5),
+            'linestyle': style_dict.get('rect_selector.linestyle', '-')
+        }
 
     def _apply_plot_style(self, canvas, axes, style_dict):
         """Apply a given style dictionary to the plot.
@@ -192,7 +265,7 @@ class PlotStyler:
             ax.set_facecolor(style_dict.get('axes.facecolor', current_facecolor))
 
             edge_color = style_dict.get('axes.edgecolor')
-            linewidth = 0.6
+            linewidth = 0.8
 
             for spine in ax.spines.values():
                 if edge_color is not None:
@@ -204,7 +277,7 @@ class PlotStyler:
                 visible=style_dict.get('axes.grid', True),
                 color=style_dict.get('grid.color', '#cccccc'),
                 linestyle=style_dict.get('grid.linestyle', '-'),
-                linewidth=0.5,
+                linewidth=0.8,
                 alpha=0.5
             )
 
@@ -215,9 +288,9 @@ class PlotStyler:
                     'colors': style_dict.get(f'{axis}tick.color') or style_dict.get('axes.labelcolor'),
                     'labelcolor': style_dict.get('axes.labelcolor') or style_dict.get(f'{axis}tick.color'),
                     'labelsize': style_dict.get(f'{axis}tick.labelsize') or style_dict.get('axes.labelsize', 12),
-                    'width': 0.6,
-                    'length': 3,
-                    'pad': 2,
+                    'width': 0.8,
+                    'length': 4,
+                    'pad': 5,
                     'direction': direction
                 }
                 ax.tick_params(axis=axis, which='major',
@@ -233,16 +306,16 @@ class PlotStyler:
             if show_x_minor:
                 ax.xaxis.set_minor_locator(AutoMinorLocator())
                 ax.tick_params(axis='x', which='minor',
-                             width=0.4,
-                             length=1.5,
+                             width=0.6,
+                             length=2.0,
                              colors=style_dict.get('xtick.minor.color') or '#999999',
                              direction=x_direction)
 
             if show_y_minor:
                 ax.yaxis.set_minor_locator(AutoMinorLocator())
                 ax.tick_params(axis='y', which='minor',
-                             width=0.4,
-                             length=1.5,
+                             width=0.6,
+                             length=3.0,
                              colors=style_dict.get('ytick.minor.color') or '#999999',
                              direction=y_direction)
 
@@ -284,13 +357,3 @@ class PlotStyler:
 
                 frame.set_facecolor(facecolor)
                 frame.set_edgecolor(edgecolor)
-
-    def get_styles(self):
-        return self.styles.keys()
-
-    def apply_style(self, style_key, canvas, axes) -> None:
-        """Apply a tight, modern, minimal look to the plot."""
-        self.current_style = style_key
-        self.current_style_dict = self.styles.get(style_key, "modern")
-        self._apply_plot_style(canvas, axes, self.current_style_dict)
-
