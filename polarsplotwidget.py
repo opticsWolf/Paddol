@@ -5,9 +5,6 @@ Copyright (c) 2025 opticsWolf
 
 SPDX-License-Identifier: LGPL-3.0-or-later
 """
-
-# -*- coding: utf-8 -*-
-
 import sys
 import io
 from pathlib import Path
@@ -53,7 +50,7 @@ class PolarsPlotWidget(QWidget):
     y_arrays (Dict[str, np.ndarray]): Mapping of column names to their NumPy arrays for plotting.
     """
 
-    def __init__(self, parent: Any = None, current_map: str = "viridis") -> None:
+    def __init__(self, parent: Any = None, current_map: str = "viridis", plot_style: str = "grey") -> None:
         """Initialize the widget with a horizontal split view for columns and plot.
 
         The layout consists of two main areas in group boxes arranged horizontally using QSplitter.
@@ -72,6 +69,9 @@ class PolarsPlotWidget(QWidget):
         self.x_array: np.ndarray = np.array([])
         self.column_colors = {}
         self.current_cmap = current_map
+
+        self.current_style = plot_style  # Default to light theme light or dark
+        self.plot_styler = PlotStyler(self.current_style)
 
         # Initialize UI components
         self._setup_ui()
@@ -120,7 +120,7 @@ class PolarsPlotWidget(QWidget):
         self.figure, self.ax = plt.subplots(figsize=(8, 5), dpi=100)
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.toolbar = CSVPlottoolbar(self.canvas, self)#, icons_dir="src/icons")
-    
+        
         plot_layout.addWidget(self.canvas, 1)
         plot_layout.addWidget(self.toolbar, 0)
     
@@ -139,12 +139,9 @@ class PolarsPlotWidget(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(4, 4, 4, 4)
         main_layout.addWidget(main_splitter)
+     
     
-        # Set initial sizes (column list 25% / plot 75%) using relative ratios
-        #main_splitter.setSizes([1, 5])  # Ratio of left to right
-    
-        self.current_style = 'grey'  # Default to light theme light or dark
-        self.plot_styler = PlotStyler()
+        self.setup_auto_tightlayout()
     
         self._apply_modern_style()
 
@@ -173,6 +170,48 @@ class PolarsPlotWidget(QWidget):
            }
        """)
 
+    def get_plot_settings(self) -> Dict[str, str]:
+        """
+        Get the current plot settings.
+        
+        Returns a dictionary containing:
+        - "style": Current style name (str)
+        - "colormap": Current colormap name (str)
+        
+        Returns:
+            Dictionary with current plot settings
+        """
+        settings_dict = {}
+        settings_dict["style"] = self.current_style
+        settings_dict["colormap"] = self.current_cmap
+        return settings_dict
+        
+    def set_plot_settings(self, settings_dict: Dict[str, Any]) -> None:
+        """
+        Set plot settings from a dictionary.
+        
+        Args:
+            settings_dict: Dictionary containing plot settings. Expected keys:
+                - "style": Style name (str)
+                - "colormap": Colormap name (str)
+        
+        The method will use default values ("grey" for style, "viridis" for colormap)
+        if the corresponding keys are missing in the input dictionary.
+        """
+        self.current_style = settings_dict.get("style", "grey")
+        self.current_cmap = settings_dict.get("colormap", "viridis")
+        self.setup_auto_tightlayout()
+        self._apply_modern_style()
+        
+    def _return_rect_selector_style(self) -> Dict[str, Any]:
+        """
+        Get rectangle selector style from the plot styler.
+        
+        Returns:
+            Dictionary containing rectangle selector properties, or empty dict if not available.
+        """
+        return self.plot_styler.get_rect_selector_style()    
+    
     # ------------------------------------------------------------------
     def set_dataframe(self, df: pl.DataFrame) -> None:
         """Load a single Polars DataFrame for display.
@@ -208,6 +247,20 @@ class PolarsPlotWidget(QWidget):
 
     # ------------------------------------------------------------------   
     def _update_column_list(self) -> None:
+        """Updates the column list display with colored icons representing each dataframe column.
+
+        This method populates the column selection model with visual representations of each
+        column, using a colormap to assign unique colors. It creates line-style icons for each
+        column and selects all columns by default when the list is populated.
+        
+        Preconditions:
+            - self.dataframe must be non-empty for updates to occur (empty or None skips update)
+        
+        Side effects:
+            - Clears and repopulates self.col_model with QStandardItems representing columns
+            - Stores column color mappings in self.column_colors dictionary
+            - Sets selection of all rows in the column list view
+        """
         if self.dataframe is not None:
             if self.dataframe.is_empty():
                 return
@@ -285,55 +338,69 @@ class PolarsPlotWidget(QWidget):
     
     # ------------------------------------------------------------------
     def set_new_colormap(self, cmap):
+        """
+        Set a new colormap to be used for plotting.
+        
+        Args:
+            cmap: The name of the colormap (str) or None. If None is provided,
+                  it will revert to the default colormap ("viridis").
+        This method updates the current colormap and triggers an update of related
+        elements that depend on the colormap
+        """
         self.current_cmap = cmap
         # Optionally refresh drawings, recolor lines, etc.
         self._update_column_list()
-        
+            
     # ------------------------------------------------------------------
     def _on_selection_changed(self, *_):
-        """Refresh plot when column selection changes."""
+        """
+        Refresh the plot when column selection changes.
+        
+        This method is typically connected to a signal that triggers on selection change.
+        It ensures the visualization is updated to reflect the current data selection.
+        
+        Args:
+            *_ : Any additional arguments are ignored as this is connected to signals
+        """
         self._update_plot()
 
-    # ------------------------------------------------------------------
-    # def _apply_modern_style(self) -> None:
-    #     """Apply a tight, modern, minimal look to the plot."""
-    #     self.figure.set_facecolor("#fafafa")
-    #     self.ax.set_facecolor("#dadada")
-    
-    #     # Simplified, neutral axes
-    #     for spine in self.ax.spines.values():
-    #         spine.set_color("#bcbcbc")
-    #         spine.set_linewidth(0.6)
-    #     #self.ax.spines["top"].set_visible(False)
-    #     #self.ax.spines["right"].set_visible(False)
-    
-    #     # Fine grid
-    #     self.ax.grid(True, color="#bcbcbc", linewidth=0.5, alpha=0.5)
-    #     self.ax.tick_params(
-    #         colors="#555555",
-    #         labelsize=6.5,
-    #         width=0.6,
-    #         length=3,
-    #         pad=2,
-    #     )
-    #     self.ax.xaxis.set_minor_locator(AutoMinorLocator())
-    #     self.ax.yaxis.set_minor_locator(AutoMinorLocator())
-    #     self.ax.tick_params(
-    #         which='minor',
-    #         width=0.4,      # Slightly thinner than major ticks
-    #         length=1.5,     # Shorter than major ticks
-    #         color="#999999" # Lighter color for subticks
-    #         )
-    
-    #     self.ax.xaxis.label.set_color("#555555")
-    #     self.ax.yaxis.label.set_color("#555555")
-    #     self.ax.xaxis.label.set_size(7)
-    #     self.ax.yaxis.label.set_size(7)
-    #     self.ax.title.set_color("#222222")
-    #     self.ax.title.set_size(8)
-
     def _apply_modern_style(self) -> None:
+        """
+        Apply modern styling to the current plot.
+        
+        This sets a clean, professional look with appropriate spacing and formatting.
+        The actual style is determined by self.current_style and applied through
+        the plot_styler.
+        """
         self.plot_styler.apply_style(self.current_style, self.canvas, self.ax)
+
+    def setup_auto_tightlayout(self) -> None:
+        """Set up automatic tight layout updates for a Matplotlib figure in PyQt5.
+    
+        Args:
+            widget: Any QWidget that might be resized (e.g., QMainWindow or container)
+            fig: The matplotlib Figure object to keep in tight layout.
+        """
+        def on_resize(event=None):
+            try:
+                #plt.tight_layout()
+                self.figure.tight_layout(pad=1.0, w_pad=2.5, h_pad=3.0)
+                if hasattr(self.figure.canvas, 'draw_idle'):
+                    self.figure.canvas.draw_idle()
+            except Exception as e:
+                print(f"Error updating tight layout: {str(e)}")
+    
+        # Save the original resizeEvent
+        original_resize = self.resizeEvent
+    
+        def new_resize(event):
+            # First call the original resize handler to maintain all existing behavior
+            if original_resize:
+                original_resize(event)
+            on_resize()
+    
+        # Replace the widget's resizeEvent with our modified version
+        self.resizeEvent = new_resize
 
     # ------------------------------------------------------------------
     def _update_plot(self) -> None:
