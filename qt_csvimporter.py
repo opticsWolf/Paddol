@@ -12,8 +12,8 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QListWidget, 
     QListWidgetItem, QMenu, QAction, QFileDialog, QLabel, QHBoxLayout, 
     QComboBox, QSplitter, QTextEdit, QTableView, QMessageBox, QSpinBox, 
-    QCheckBox, QGroupBox, QFormLayout, QSizePolicy
-)
+    QCheckBox, QGroupBox, QFormLayout, QSizePolicy, QLayout, QLayoutItem, QSpacerItem
+    )
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt, QAbstractTableModel
 
@@ -21,13 +21,11 @@ import polars as pl
 
 from typing import Dict, Union
 
-from qt_icons import ICON_DICT, scan_icons_folder
+from qt_icons import ICON_DICT
+from qt_collapsible import CollapsibleSectionMixin
 from csvdata import CSVData
 
-
-#ICON_DICT = scan_icons_folder(Path("src/icons"))
 CONFIG_FILE = str(Path.cwd() / "config" / "csv_importer_config.json")
-print (CONFIG_FILE)
 
 class PolarsModel(QAbstractTableModel):
     """QAbstractTableModel that wraps a :class:`polars.DataFrame`.
@@ -100,7 +98,7 @@ class PolarsModel(QAbstractTableModel):
             return str(section + 1)
         return None
 
-class CSVImporterWindow(QMainWindow):
+class CSVImporterWindow(QMainWindow, CollapsibleSectionMixin):
     """Main window for importing and displaying multiple CSV files."""
     def __init__(self):
         super().__init__()
@@ -153,10 +151,10 @@ class CSVImporterWindow(QMainWindow):
         main_layout.addWidget(file_group)
 
         # ===== Import Options =====
-        options_group = QGroupBox("Import Options")
-        options_group.setCheckable(True)
-        options_layout = QFormLayout(options_group)
-        main_layout.addWidget(options_group)
+        self.options_group = QGroupBox("Import Options")
+        self.options_group.setCheckable(True)
+        options_layout = QFormLayout(self.options_group)
+        main_layout.addWidget(self.options_group)
 
         self.auto_detect_checkbox = QCheckBox("Enable Auto-Detection")
         self.auto_detect_checkbox.setChecked(True)
@@ -235,46 +233,15 @@ class CSVImporterWindow(QMainWindow):
         options_layout.addRow(QLabel("Interpolation Mode:"), self.interp_mode_combo)
 
         # ────── Build a flat list of all child widgets that should hide/show together ──────        
-        self._import_option_items = []
-        
-        for i in range(options_layout.count()):
-            item = options_layout.itemAt(i)
-        
-            if item.widget():
-                self._import_option_items.append(item.widget())
-            elif item.layout():
-                # Collect all widgets inside nested layouts
-                for k in range(item.layout().count()):
-                    sub_item = item.layout().itemAt(k)
-                    if sub_item.widget():
-                        self._import_option_items.append(sub_item.widget())
-        
-        def toggle_import_options_visibility(checked):
-            """Show or hide all child widgets when the QGroupBox is toggled."""
-            if not hasattr(toggle_import_options_visibility, 'original'):
-                toggle_import_options_visibility.original = {
-                    "height": options_group.height(),
-                    "margins": options_layout.contentsMargins()
-                }
-        
-            # Toggle visibility of all collected widgets
-            for w in self._import_option_items:
-                w.setVisible(checked)
-        
-            if checked:
-                # Restore original margins and height
-                m = toggle_import_options_visibility.original["margins"]
-                options_layout.setContentsMargins(m.left(), m.top(), m.right(), m.bottom())
-                options_group.setMinimumHeight(toggle_import_options_visibility.original["height"])
-            else:
-                # Collapse fully
-                options_layout.setContentsMargins(0, 0, 0, 0)
-                options_group.setMinimumHeight(0)
-        
+        # Enable collapsible behavior
+        self.enable_collapsible(
+            container=self.options_group,
+            root_item=self.options_group
+        )              
+       
         # Connect the group box's state change to the visibility toggle function
-        options_group.toggled.connect(toggle_import_options_visibility)
-        
-        self.options_group = options_group
+        #self.options_group.toggled.connect(self.toggle_import_options_visibility )
+
         
         # ===== Import Button =====
         self.import_button = QPushButton(" Import Files → Polars")
