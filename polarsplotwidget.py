@@ -6,30 +6,27 @@ Copyright (c) 2025 opticsWolf
 SPDX-License-Identifier: LGPL-3.0-or-later
 """
 import sys
-import io
-from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 import polars as pl
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.ticker import AutoMinorLocator
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
-from matplotlib.backends.backend_qt5 import NavigationToolbar2QT as NavigationToolbar
 
-from PyQt5.QtCore import QItemSelectionModel, QPoint, Qt, QItemSelection
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+
+
+from PyQt5.QtCore import QItemSelectionModel, Qt, QItemSelection
 
 from PyQt5.QtGui import (QStandardItemModel, QStandardItem, QIcon, 
-                         QImage, QPixmap, QColor, QPainter, QPen
+                         QPixmap, QColor, QPainter, QPen
                          )
 
-from PyQt5.QtWidgets import (QWidget, QListView, QHBoxLayout, QVBoxLayout,
-                             QApplication, QAbstractItemView, QMenu, QAction,
-                             QSplitter, QGroupBox, QSizePolicy, QComboBox,
-                             QLabel
+from PyQt5.QtWidgets import (QWidget, QListView, QVBoxLayout,
+                             QApplication, QAbstractItemView, 
+                             QSplitter, QGroupBox, QSizePolicy, 
                              )
 
-from qt_icons import ICON_DICT, scan_icons_folder
+#from qt_icons import ICON_DICT
 from qt_plottoolbar import CSVPlottoolbar
 from plotstyler import PlotStyler
 
