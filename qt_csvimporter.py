@@ -6,12 +6,13 @@ Copyright (c) 2025 opticsWolf
 SPDX-License-Identifier: LGPL-3.0-or-later
 """
 import sys
+import json
 from pathlib import Path
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QListWidget, 
     QListWidgetItem, QMenu, QAction, QFileDialog, QLabel, QHBoxLayout, 
     QComboBox, QSplitter, QTextEdit, QTableView, QMessageBox, QSpinBox, 
-    QCheckBox, QGroupBox, QFormLayout
+    QCheckBox, QGroupBox, QFormLayout, QSizePolicy
 )
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt, QAbstractTableModel
@@ -20,34 +21,13 @@ import polars as pl
 
 from typing import Dict, Union
 
+from qt_icons import ICON_DICT, scan_icons_folder
 from csvdata import CSVData
 
-def scan_icons_folder(folder_path: Union[str, Path]) -> Dict[str, str]:
-    """Scan *folder_path* for icon files and return a mapping of base names to paths.
 
-    The function looks only at regular files whose extensions are ``.png`` or
-    ``.svg`` (case‑insensitive).  For each matching file the key in the returned
-    dictionary is the filename without its extension (*stem*), while the value
-    is the absolute path as a string, which can be supplied directly to PyQt
-    widgets.
-
-    Args:
-        folder_path: Directory containing icon assets. Can be a ``str`` or
-            :class:`pathlib.Path`.
-
-    Returns:
-        dict[str, str]: Mapping from icon base name to absolute file path.
-    """
-    icon_dict = {}
-    folder = Path(folder_path)
-    # Get all files in the directory that end with .png or .svg (case insensitive)
-    for file in folder.iterdir():
-        if file.is_file() and file.suffix.lower() in ('.png', '.svg'):
-            key = file.stem  # This is filename without extension
-            icon_dict[key] = str(file)  # Convert to string path for PyQt compatibility
-    return icon_dict
-
-ICON_DICT = scan_icons_folder(Path("src/icons"))
+#ICON_DICT = scan_icons_folder(Path("src/icons"))
+CONFIG_FILE = str(Path.cwd() / "config" / "csv_importer_config.json")
+print (CONFIG_FILE)
 
 class PolarsModel(QAbstractTableModel):
     """QAbstractTableModel that wraps a :class:`polars.DataFrame`.
@@ -132,6 +112,8 @@ class CSVImporterWindow(QMainWindow):
         self.current_file = None
         self.interp_mode = "crop"
 
+        self.last_directory = ""
+
         # ===== Central Layout =====
         central = QWidget()
         self.setCentralWidget(central)
@@ -140,12 +122,26 @@ class CSVImporterWindow(QMainWindow):
         # ===== File Selection Group =====
         file_group = QGroupBox("Loaded CSV Files")
         file_layout = QVBoxLayout(file_group)
+        
+        # Create horizontal layout for the two buttons with proper spacing
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)  # Add some space between buttons
+        
         self.select_button = QPushButton(" Select CSV Files")
         self.select_button.setIcon(QIcon(ICON_DICT['open_folder']))
         self.select_button.clicked.connect(self.select_files)
-        file_layout.addWidget(self.select_button)
-
-        # File list with checkboxes
+        
+        self.import_button = QPushButton(" Load CSV-Files from Folders")
+        # Use same icon as folder open if 'import_folder' not defined
+        icon_key = ICON_DICT.get('import_folder', 'open_folder')
+        self.import_button.setIcon(QIcon(ICON_DICT[icon_key]))
+        self.import_button.clicked.connect(self.select_files_from_folder)
+        
+        button_layout.addWidget(self.select_button)
+        button_layout.addWidget(self.import_button)
+        file_layout.addLayout(button_layout)  # Add the horizontal layout to VBox
+        
+        # File list with checkboxes (unchanged from original)
         self.file_list = QListWidget()
         self.file_list.itemChanged.connect(self.on_file_checked)
         self.file_list.currentItemChanged.connect(self.on_file_selected)
@@ -153,11 +149,12 @@ class CSVImporterWindow(QMainWindow):
         self.file_list.customContextMenuRequested.connect(self.show_file_context_menu)
         self.file_list.setMaximumHeight(120)
         file_layout.addWidget(self.file_list, 1)
-
+        
         main_layout.addWidget(file_group)
 
         # ===== Import Options =====
         options_group = QGroupBox("Import Options")
+        options_group.setCheckable(True)
         options_layout = QFormLayout(options_group)
         main_layout.addWidget(options_group)
 
@@ -185,9 +182,11 @@ class CSVImporterWindow(QMainWindow):
         skip_layout = QHBoxLayout()
         self.skip_initial_spin = QSpinBox()
         self.skip_initial_spin.setRange(0, 100)
+        self.skip_initial_spin.setEnabled(False)
         self.skip_initial_spin.valueChanged.connect(self.import_data)
         self.skip_end_spin = QSpinBox()
         self.skip_end_spin.setRange(0, 100)
+        self.skip_end_spin.setEnabled(False)
         self.skip_end_spin.valueChanged.connect(self.import_data)
         skip_layout.addWidget(QLabel("Skip Start:"), stretch=1)
         skip_layout.addWidget(self.skip_initial_spin, stretch=3)
@@ -235,6 +234,48 @@ class CSVImporterWindow(QMainWindow):
         self.interp_mode_combo.currentIndexChanged.connect(self.on_interp_mode_change)
         options_layout.addRow(QLabel("Interpolation Mode:"), self.interp_mode_combo)
 
+        # ────── Build a flat list of all child widgets that should hide/show together ──────        
+        self._import_option_items = []
+        
+        for i in range(options_layout.count()):
+            item = options_layout.itemAt(i)
+        
+            if item.widget():
+                self._import_option_items.append(item.widget())
+            elif item.layout():
+                # Collect all widgets inside nested layouts
+                for k in range(item.layout().count()):
+                    sub_item = item.layout().itemAt(k)
+                    if sub_item.widget():
+                        self._import_option_items.append(sub_item.widget())
+        
+        def toggle_import_options_visibility(checked):
+            """Show or hide all child widgets when the QGroupBox is toggled."""
+            if not hasattr(toggle_import_options_visibility, 'original'):
+                toggle_import_options_visibility.original = {
+                    "height": options_group.height(),
+                    "margins": options_layout.contentsMargins()
+                }
+        
+            # Toggle visibility of all collected widgets
+            for w in self._import_option_items:
+                w.setVisible(checked)
+        
+            if checked:
+                # Restore original margins and height
+                m = toggle_import_options_visibility.original["margins"]
+                options_layout.setContentsMargins(m.left(), m.top(), m.right(), m.bottom())
+                options_group.setMinimumHeight(toggle_import_options_visibility.original["height"])
+            else:
+                # Collapse fully
+                options_layout.setContentsMargins(0, 0, 0, 0)
+                options_group.setMinimumHeight(0)
+        
+        # Connect the group box's state change to the visibility toggle function
+        options_group.toggled.connect(toggle_import_options_visibility)
+        
+        self.options_group = options_group
+        
         # ===== Import Button =====
         self.import_button = QPushButton(" Import Files → Polars")
         self.import_button.setIcon(QIcon(ICON_DICT['file_import']))
@@ -278,6 +319,9 @@ class CSVImporterWindow(QMainWindow):
         self.table_view.setAlternatingRowColors(True)
         table_layout.addWidget(self.table_view)
         self.splitter.addWidget(table_widget)
+    
+        # Load import options        
+        self.load_import_options()
         
         # Optional: set initial sizes
         self.splitter.setSizes([500, 700])
@@ -322,35 +366,235 @@ class CSVImporterWindow(QMainWindow):
             }
         """)
 
+
+    # ====================================================================
+    def load_import_options(self):
+        """Load import options from config file if it exists using JSON.
+
+        Suppresses signals while updating widgets to prevent event cascades.
+        If the config file doesn't exist or is invalid, default values will be used.
+        """
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                config = json.load(f)
+                if not isinstance(config, dict):
+                    raise ValueError("Config file must be a JSON object")
+
+            # List of widgets that need signal blocking
+            widget_list = [
+                self.auto_detect_checkbox,
+                self.separator_combo,
+                self.decimal_combo,
+                self.skip_initial_spin,
+                self.skip_end_spin,
+                self.manual_scale_checkbox,
+                self.wavelength_unit_combo,
+                self.data_type_combo,
+                self.auto_sort_checkbox,
+                self.interp_mode_combo
+            ]
+
+            # Block signals for all specified widgets
+            signal_states = [widget.signalsBlocked() for widget in widget_list]
+            for widget in widget_list:
+                widget.blockSignals(True)
+
+            try:
+                self.auto_detect_checkbox.setChecked(config.get('auto_detect', True))
+                self.separator_combo.setCurrentText(str(config.get('separator', ",")))
+                self.decimal_combo.setCurrentText(str(config.get('decimal', ".")))
+                self.skip_initial_spin.setValue(int(config.get('skip_start', 0)))
+                self.skip_end_spin.setValue(int(config.get('skip_end', 0)))
+
+                manual_scale = config.get('manual_scale', False)
+                self.manual_scale_checkbox.setChecked(manual_scale)
+                self.wavelength_unit_combo.setEnabled(manual_scale)
+                self.data_type_combo.setEnabled(manual_scale)
+
+                self.wavelength_unit_combo.setCurrentText(str(config.get('wavelength_unit', "nm")))
+                self.data_type_combo.setCurrentText(str(config.get('data_type',
+                                                                   "Normalized (0 – 1)")))
+                self.auto_sort_checkbox.setChecked(config.get('auto_sort', True))
+                self.interp_mode_combo.setCurrentText(str(config.get('interp_mode',
+                                                                    "Crop to overlap")))
+
+                expanded = bool(config.get("import_options_expanded", True))
+                self.options_group.setChecked(expanded)
+
+                # last_directory doesn't trigger signals
+                self.last_directory = str(config.get('last_directory', ""))
+            finally:
+                # Restore original signal blocking states
+                for i, widget in enumerate(widget_list):
+                    widget.blockSignals(signal_states[i])
+
+        except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
+            print(f"Warning: Could not load config - using defaults. Error: {e}")
+            pass  # Default values are used automatically due to .get() defaults
+
+    def save_import_options(self):
+        """Save current import options and last directory to config file using JSON.
+
+        Creates parent directories if they don't exist. Non-critical operation -
+        failures will be logged but not raise exceptions.
+        """
+        try:
+            # Create parent directories for the config file
+            Path(CONFIG_FILE).parent.mkdir(parents=True, exist_ok=True)
+
+            config = {
+                "auto_detect": self.auto_detect_checkbox.isChecked(),
+                "separator": str(self.separator_combo.currentText()),
+                "decimal": str(self.decimal_combo.currentText()),
+                "skip_start": int(self.skip_initial_spin.value()),
+                "skip_end": int(self.skip_end_spin.value()),
+                "manual_scale": self.manual_scale_checkbox.isChecked(),
+                "wavelength_unit": str(self.wavelength_unit_combo.currentText()),
+                "data_type": str(self.data_type_combo.currentText()),
+                "auto_sort": self.auto_sort_checkbox.isChecked(),
+                "interp_mode": str(self.interp_mode_combo.currentText()),
+                "import_options_expanded": bool(self.options_group.isChecked()),
+                "last_directory": str(self.last_directory)
+            }
+
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(config, f, indent=2)  # Indent for human-readable output
+        except (IOError, OSError) as e:
+            print(f"Warning: Could not save config. Error: {e}")
+            pass  # Silently fail - this is non-critical functionality
+
+    def closeEvent(self, event):
+        """Save current options when dialog is closed."""
+        self.save_import_options()
+        super().closeEvent(event)
+
+
     # ====================================================================
     # FILE HANDLING
-    # ====================================================================
+    # ====================================================================  
     def select_files(self):
-        """Allow user to select multiple CSV files and preview the first one."""
-        file_paths, _ = QFileDialog.getOpenFileNames(
+        """Allow user to select multiple CSV files and preview the first one.
+    
+        Uses saved last directory for the file dialog if it exists, otherwise defaults to home directory.
+        Only adds new files that aren't already in the list.
+        Auto-selects and previews the first new file added.
+        """
+        # Determine starting directory
+        start_dir = ""
+        try:
+            if self.last_directory and Path(self.last_directory).exists():
+                start_dir = str(Path(self.last_directory))
+            else:
+                start_dir = str(Path.home())  # Fall back to home directory
+        except Exception:
+            start_dir = str(Path.home())
+    
+        options = QFileDialog.Options()
+        #options |= QFileDialog.DontUseNativeDialog
+        files, _ = QFileDialog.getOpenFileNames(
             self,
             "Select CSV Files",
-            "",
-            "CSV Files (*.csv);;All Files (*)"
+            start_dir,
+            "CSV Files (*.csv);;All Files (*)",
+            options=options
         )
-        if not file_paths:
-            return
     
+        if not files:
+            return
+        
         first_new_item = None
-        for path in file_paths:
-            if path not in [f[0] for f in self.files]:
-                self.files.append((path, True))
-                item = QListWidgetItem(path)
-                item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-                item.setCheckState(Qt.Checked)
-                self.file_list.addItem(item)
-                if first_new_item is None:
-                    first_new_item = item
+        for path in files:
+            # Skip duplicate paths (case-sensitive)
+            if any(path == f[0] for f in self.files):
+                continue
+    
+            # Add new file to the list and UI
+            self.files.append((path, True))
+            item = QListWidgetItem(path)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+            item.setCheckState(Qt.Checked)
+            self.file_list.addItem(item)
+    
+            if first_new_item is None:
+                first_new_item = item
+    
+        self.skip_initial_spin.setEnabled(True)
+        self.skip_end_spin.setEnabled(True)
     
         # Auto-select and preview the first new file
         if first_new_item:
             self.file_list.setCurrentItem(first_new_item)
             self.preview_and_display_file(first_new_item.text())
+    
+        # Update last_directory to the directory of the first selected file
+        if files:
+            self.last_directory = str(Path(files[0]).parent)
+
+    def select_files_from_folder(self, file_extension='.csv'):
+        """Selects a folder, recursively scans for files with the given extension,
+        and adds non-duplicate paths to self.files and the UI list widget.
+    
+        Args:
+            file_extension (str): File extension including dot (e.g., '.csv').
+        """
+        file_extension='.csv'
+        # Determine starting directory
+        try:
+            if getattr(self, 'last_directory', None) and Path(self.last_directory).exists():
+                start_dir = str(Path(self.last_directory))
+            else:
+                start_dir = str(Path.home())
+        except Exception:
+            start_dir = str(Path.home())
+    
+        # Folder selection
+        dir_path = QFileDialog.getExistingDirectory(
+            self,
+            f"Select Folder to Import {file_extension[1:].upper()} Files",
+            start_dir
+        )
+        if not dir_path:
+            return
+    
+        root = Path(dir_path)
+        ext_lower = file_extension.lower()
+        new_files_to_add = []
+    
+        # Pure pathlib recursive scan inlined here
+        try:
+            for path in root.rglob(f'*{ext_lower}'):
+                if path.is_file():
+                    # Case-sensitive duplicate check
+                    if not any(path == p[0] for p in self.files):
+                        new_files_to_add.append(str(path))
+        except OSError:
+            pass  # Skip inaccessible directories silently
+    
+        # Add new files to data model and UI
+        first_new_item = None
+        for filepath in new_files_to_add:
+            self.files.append((filepath, True))
+    
+            item = QListWidgetItem(filepath)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+            item.setCheckState(Qt.Checked)
+            self.file_list.addItem(item)
+    
+            if first_new_item is None:
+                first_new_item = item
+    
+        # Enable skip controls
+        self.skip_initial_spin.setEnabled(True)
+        self.skip_end_spin.setEnabled(True)
+    
+        # Auto-select first new file
+        if first_new_item:
+            self.file_list.setCurrentItem(first_new_item)
+            self.preview_and_display_file(first_new_item.text())
+    
+        # Persist last used directory
+        self.last_directory = str(root)
+
     
     def on_file_selected(self, current, previous):
         """Triggered when user selects a file in the list."""
@@ -415,41 +659,72 @@ class CSVImporterWindow(QMainWindow):
     # ====================================================================
     # RIGHT CLICK MENU
     # ====================================================================
+    def _remove_file(self, file_path):
+        """Remove a specific file from the list and update UI state."""
+        self.files = [(p, checked) for p, checked in self.files if p != file_path]
+        
+        # Find and remove the item from QListWidget
+        for i in range(self.file_list.count()):
+            if self.file_list.item(i).text() == file_path:
+                self.file_list.takeItem(i)
+                break
+        
+        # Clear preview if this file was shown
+        if self.current_file == file_path:
+            self.raw_display.clear()
+            self.model.setDataFrame(pl.DataFrame())
+            self.current_file = None
+    
+    def _remove_all_files(self):
+        """Remove all files from the list and update UI state."""
+        self.files = []
+        self.file_list.clear()
+        
+        if self.current_file is not None:
+            self.raw_display.clear()
+            self.model.setDataFrame(pl.DataFrame())
+            self.current_file = None
+    
     def show_file_context_menu(self, pos):
-        """Display a context menu that allows removal of a selected file.
-
+        """Display a context menu that allows removal of selected or all files.
+    
+        The menu includes:
+            - "Remove File": Removes the file at the clicked position.
+            - "Remove All Files" (if there are any files): Removes all files and clears the preview.
+    
         Parameters:
             pos (QPoint): Position relative to ``file_list`` where the menu is shown.
         """
         item = self.file_list.itemAt(pos)
-        if not item:
-            return
+        has_items = bool(self.file_list.count())
     
         # ---- Build the menu -------------------------------------------------
         menu = QMenu(self)
-
-        # Create the "Remove File" action and attach an icon
-        remove_action = QAction(QIcon(ICON_DICT['delete_file']), "Remove File", self)
-        menu.addAction(remove_action)
-
+    
+        if item:
+            remove_action = QAction(QIcon(ICON_DICT['delete_file']), "Remove File", self)
+            menu.addAction(remove_action)
+    
+        if has_items:
+            remove_all_action = QAction(
+                QIcon(ICON_DICT.get('delete_all', ICON_DICT['delete_file'])),
+                "Remove All Files",
+                self
+            )
+            menu.addAction(remove_all_action)
+    
         # ---- Execute the menu -----------------------------------------------
         action = menu.exec_(self.file_list.mapToGlobal(pos))
         
-        if action == remove_action:
+        if not action:
+            return
+    
+        if item and action == remove_action:
             file_path = item.text()
-    
-            # Remove from internal list
-            self.files = [(p, checked) for p, checked in self.files if p != file_path]
-    
-            # Remove from QListWidget
-            row = self.file_list.row(item)
-            self.file_list.takeItem(row)
-    
-            # Clear preview if this file was shown
-            if self.current_file == file_path:
-                self.raw_display.clear()
-                self.model.setDataFrame(pl.DataFrame())
-                self.current_file = None
+            self._remove_file(file_path)
+        
+        elif has_items and action == menu.actions()[-1]:  # The last action added is "Remove All Files"
+            self._remove_all_files()
 
     # ====================================================================
     # SETTINGS AND IMPORT LOGIC
