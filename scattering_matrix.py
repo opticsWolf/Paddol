@@ -577,7 +577,7 @@ def core_engine(wavls, theta_rad, n_layers, indices, thicknesses,
 # --- Python Class Wrapper ---
 
 class FastScatterMatrix:
-    def __init__(self, layer_indices, thicknesses, incoherent_flags, roughness_params, wavls, theta):
+    def __init__(self, layer_indices, thicknesses, incoherent_flags, roughness_types, roughness_values, wavls, theta):
         """
         Prepares physical parameters for fast spectral calculations of multilayer optical structures.
 
@@ -616,18 +616,11 @@ class FastScatterMatrix:
         self.indices = np.ascontiguousarray(layer_indices, dtype=np.complex128)
         self.thicknesses = np.ascontiguousarray(thicknesses, dtype=np.float64)
         self.inc_flags = np.ascontiguousarray(incoherent_flags, dtype=np.bool_)
+                   
+        self.r_types = np.ascontiguousarray(roughness_types, dtype=np.int32)
+        self.r_vals = np.ascontiguousarray(roughness_values, dtype=np.float64)
         
-        # Parse Roughness
-        r_types = []
-        r_vals = []
-        for r_t, r_v in roughness_params:
-            r_types.append(r_t)
-            r_vals.append(r_v)
-            
-        self.r_types = np.ascontiguousarray(r_types, dtype=np.int32)
-        self.r_vals = np.ascontiguousarray(r_vals, dtype=np.float64)
-        
-    def compute(self, mode='u'):
+    def compute_RT(self, mode='u'):
         """
         Calculates polarized reflectance (R) and transmittance (T) spectra based 
         on requested polarization mode..
@@ -727,8 +720,10 @@ if __name__ == "__main__":
     # --- BRIDGE: Convert User List to Class Inputs ---
     indices_list = []
     thick_list = []
-    rough_list = []
+    rough_type_list = []
+    rough_value_list = []
     inc_list = [] # <--- Added: Need to extract incoherent flags for new class
+    
     
     for layer in structure:
         thick_list.append(layer[0])
@@ -738,9 +733,11 @@ if __name__ == "__main__":
         # Map float roughness to (Type 1=Linear, Value)
         r_val = layer[3]
         if r_val > 0:
-            rough_list.append((1, r_val)) 
+            rough_type_list.append(1) 
+            rough_value_list.append(r_val)
         else:
-            rough_list.append((0, 0.0))
+            rough_type_list.append(0) 
+            rough_value_list.append(0.0)
             
     indices_arr = np.vstack(indices_list)
     thick_arr = np.array(thick_list)
@@ -749,11 +746,11 @@ if __name__ == "__main__":
 
     # Instantiate the Class
     # Note: New class calculates all polarizations, so pol_type arg is removed
-    solver = FastScatterMatrix(indices_arr, thick_arr, inc_arr, rough_list, wavls, np.degrees(fi_rad))
+    solver = FastScatterMatrix(indices_arr, thick_arr, inc_arr, rough_type_list, rough_value_list, wavls, np.degrees(fi_rad))
 
     print("--- Starting Numba JIT Compilation (First Run) ---")
     t_compile_start = time.time()
-    _ = solver.compute()
+    _ = solver.compute_RT()
     print(f"First run (Compile + Exec) time: {time.time() - t_compile_start:.4f}s")
 
     print("\n--- Starting Benchmark (Second Run) ---")
@@ -761,7 +758,7 @@ if __name__ == "__main__":
     
     # Calculate
     for i in range(1000):
-        res = solver.compute()
+        res = solver.compute_RT()
     
         # Map Dictionary results to usage example variables
         Rs, Rp, R_avg = res['Rs'], res['Rp'], res['Ru']

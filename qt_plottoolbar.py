@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
 """
+Created on Mon Nov 17 22:36:03 2025
+
+@author: Frank
+"""
+
+"""
 PADDOL: Python Advanced Design & Dispersion Optimization Lab
 Copyright (c) 2025 opticsWolf
 
@@ -122,15 +128,20 @@ class CSVPlottoolbar(QWidget):
         layout.addWidget(self.btn_copy)
         layout.addWidget(self.btn_save)
 
-        # Spacer
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        layout.addWidget(spacer)
+        # Spacer 1
+        spacer1 = QWidget()
+        spacer1.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        layout.addWidget(spacer1)
 
         # XY label
         self.xy_label = QLabel(" ")
         self.xy_label.setMinimumWidth(150)
         layout.addWidget(self.xy_label)
+
+        # Spacer 2
+        spacer2 = QWidget()
+        spacer2.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        layout.addWidget(spacer2)
 
         # Colormap selector
         layout.addWidget(QLabel("Colormap:"))
