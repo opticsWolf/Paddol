@@ -7,471 +7,330 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 """
 
 import numpy as np
-from numba import njit #, prange
-from typing import List, Tuple, Dict, Union, Optional
-from scipy.interpolate import CubicSpline, PchipInterpolator, Akima1DInterpolator
+import matplotlib.pyplot as plt
+from numba import njit, prange
+from typing import Dict, Union, Optional, List
 
-from .material import Material, compute_energy
-
-__all__ = ["CodyLorentz", "ContinousCodyLorentz"]
-
-def get_num_points_for_kk(E_min: float, E_max: float, points_per_eV: int = 100) -> int:
-    """
-    Calculate the number of points for uniform energy grid in Kramers-Kronig integration.
-
-    Args:
-        E_min : float Minimum energy (eV) of the grid.
-        E_max : float Maximum energy (eV) of the grid.
-        points_per_eV : int, optional Number of points per electronvolt (default is 100).
-
-    Returns:
-        int Total number of points for the energy grid, with a minimum of 200.
-    """
-    E_range = E_max - E_min
-    return max(200, int(E_range * points_per_eV))
-
-
-@njit(cache=True)
-def calc_Eu(E0: float, Et: float, Gamma: float, Ep: float, Eg: float) -> float:
-    """
-    Calculate Urbach energy parameter Eu based on Cody-Lorentz model parameters.    
-    Returns:
-        Urbach energy parameter Eu in units of eV
-
-    Args:        
-        E0    : Lorentz resonance energy [eV]
-        Et    : Urbach transition energy [eV]
-        Gamma : Lorentz broadening (damping) [eV]
-        Ep    : Cody gap transition energy [eV]
-        Eg    : Optical bandgap energy [eV]
-
-    Returns:
-        Urbach energy parameter Eu in units of eV
-    """
-    num = E0**4 - Et**4
-    denom = ((E0**2 - Et**2)**2 +
-             Gamma**2 * Et**2 +
-             Ep**2 * (Et - Eg)**2 +
-             Ep**2 * Et / (Et - Eg))
-    return num / denom
-
-@njit(cache=True)
-def _CL_Gc(Ei, Eg, Ep):
-    numerator = (Ei - Eg) ** 2
-    return numerator / (numerator + Ep**2)
-
-@njit(cache=True)
-def _CL_L(Ei, A, E0, Gamma):
-    # Lorentz oscillator contribution
-    Ei2 = Ei ** 2
-    GaEi = Gamma * Ei
-    return A * E0 * GaEi / (E0**2 - Ei2)**2 + GaEi**2
-
-@njit(cache=True)
-def _epsilon2_cody_lorentz(E: np.ndarray, Eg: float, Ep: float,
-                          A: float, E0: float, Gamma: float,
-                          Et: float, Eu: float) -> np.ndarray:
-    """
-    Compute the imaginary part of the dielectric function ε₂(E) using the Cody–Lorentz model.
-    
-    Args:
-        E     : Photon energies [eV], 1D array
-        Eg    : Optical bandgap energy [eV]
-        Ep    : Cody gap transition energy [eV]
-        A     : Lorentz oscillator strength (amplitude)
-        E0    : Lorentz resonance energy [eV]
-        Gamma : Lorentz broadening (damping) [eV]
-        Et    : Urbach transition energy [eV]
-        Eu    : Urbach decay width [eV]
-    
-    Returns:
-        eps2 : Imaginary part of dielectric function, same shape as E
-    """
-
-    eps2 = np.zeros(E.shape, dtype=np.float64)
-
-    # Avoid division by zero or negative sqrt later
-    #if Et <= Eg or Eu <= 0.0:
-    #    return eps2  # Unphysical model, return zero
-    
-    E1 = Et * _CL_L(Et, A, E0, Gamma) * _CL_Gc(Et, Eg, Ep)
-    #E_2 = E**2
-    
-    for i in range(E.shape[0]):
-        if E[i] >= Et:
-            #L(E) Lorentz function
-            L = _CL_L(E[i], A, E0, Gamma)
-            #Gc(E) Coady gap function
-            Gc = _CL_Gc(E[i], Eg, Ep)
-            eps2[i] = L * Gc
-            
-        elif 0 < E[i] < Et:
-            eps2[i] = E1/E[i] * np.exp((E[i] - Et) / Eu)
-            
-    return eps2
-
-@njit(cache=True)
-def _eps2_c_cody_lorentz(E: np.ndarray, A: float, Eg: float, Ep: float,
-                      E0: float, Gamma: float, Et: float, Eu: float) -> np.ndarray:
-    """
-    Calculate the imaginary part of the dielectric function ε₂(E) based on 
-    the Continuous-Cody–Lorentz optical model.
-    
-    The function models absorption in three regions:
-    - For photon energies E ≤ Eg (bandgap energy), absorption is zero.
-    - For Eg < E < Et (transition energy), absorption follows an Urbach tail with exponential decay.
-    - For E ≥ Et, absorption follows the Lorentz oscillator form ensuring continuity and physical consistency.
-    
-    Parameters:
-        E (np.ndarray): Photon energy array (in eV) at which ε₂(E) is evaluated.
-        A (float): Amplitude coefficient controlling the strength of absorption.
-        Eg (float): Bandgap energy (in eV), below which absorption is zero.
-        Ep (float): Parameter related to oscillator strength or broadening in the model.
-        E0 (float): Resonance energy of the oscillator (in eV).
-        Gamma (float): Broadening (damping) parameter of the oscillator (in eV).
-        Et (float): Transition energy (in eV) between the Urbach tail and Lorentz oscillator regions.
-        Eu (float): Urbach decay energy (in eV), controlling the exponential tail slope.
+# Try importing from local structure, mock if missing for standalone usage
+try:
+    from .material import Material, compute_energy
+except ImportError:
+    # Mock for standalone testing if package structure isn't present
+    class Material:
+        def __init__(self, params, wavelength=None): 
+            self.A = params.get('A', 0)
+            if wavelength is not None: self.set_wavelength_range(wavelength)
+        def set_wavelength_range(self, wl): self.wavelength = np.asarray(wl, dtype=np.float64)
+        def get_params(self): return {'A': self.A}
         
-    Returns:
-        np.ndarray: Imaginary part of the dielectric function ε₂(E) evaluated at energies E.
-    """
-    eps2 = np.zeros_like(E)
-    for i in range(E.shape[0]):
-        Ei = E[i]
-        if Ei <= Eg:
-            eps2[i] = 0.0
-        elif Eg < Ei < Et:
-            eps2[i] = A * Ei / ((Ei - Eg)**2 + Ep**2) * np.exp((Ei - Et) / Eu)
-        else:
-            numerator = A * Gamma * Ei * (E0**2 - Ei**2)**2
-            denominator = ((E0**2 - Ei**2)**2 + Gamma**2 * Ei**2) * (Ei**2 - Eg**2 + Ep**2)
-            eps2[i] = numerator / denominator
-    return eps2
+    @njit(cache=True)
+    def compute_energy(wavelength, h_c): return h_c / np.maximum(wavelength, 1e-9)
 
-@njit(cache=True, fastmath=True)
-def _eps1_kramer_kronig(E: np.ndarray, eps2: np.ndarray, eps_inf: float) -> np.ndarray:
+__all__ = ["CodyLorentz"]
+
+
+# --- Numba Accelerated Helper Functions ---
+
+@njit(cache=True, parallel=True, fastmath=True)
+def kramers_kronig_maclaurin(E: np.ndarray, 
+                             eps2: np.ndarray, 
+                             eps_inf: float) -> np.ndarray:
     """
-    Compute the real part of the dielectric function ε₁(E) using the Kramers–Kronig relation.
+    Computes eps1 via Maclaurin's Method (Subtract-and-Add).
     
-    Vectorized Hilbert transform for ε1(E), assuming:
-    - uniform spacing in E
-    - sorted ascending E
-    Assumes uniform E spacing and sorted input.
-    """
-    N = E.shape[0]
-    dE = E[1] - E[0]
-    eps1 = np.zeros(N)
-
-    for i in range(N):
-        Ei = E[i]
-        sum_val = 0.0
-        for j in range(N):
-            if i == j:
-                continue
-            Ej = E[j]
-            sum_val += Ej * eps2[j] / (Ej**2 - Ei**2)
-        eps1[i] = eps_inf + (2.0 / np.pi) * dE * sum_val
-
-    return eps1
-
-@njit(cache=True)
-def epsilon1_from_epsilon2_kramers_kronig(
-    E: np.ndarray,
-    eps2: np.ndarray,
-    epsilon_inf: float = 1.0
-) -> np.ndarray:
-    """
-    Compute the real part of the dielectric function ε₁(E) using the Kramers–Kronig relation
-    with the trapezoidal rule.
-
-    Parameters:
-        E           : Photon energies [eV], 1D array (must be sorted ascending)
-        eps2        : Imaginary part ε₂(E), same shape as E
-        epsilon_inf : High-frequency dielectric constant
-
-    Returns:
-        eps1        : Real part ε₁(E), same shape as E
+    This replaces the 'exclusion' method. It mathematically removes the 
+    singularity at E' = E, allowing integration across the entire range 
+    without skipping bins, which is crucial for accuracy on coarse grids.
+    
+    Formula:
+        P int ... = int [ (E'*e2(E') - E*e2(E)) / (E'^2 - E^2) ]
+    
+    Args:
+        E: Energy array [eV] (source and target are the same).
+        eps2: Imaginary dielectric function array.
+        eps_inf: High-frequency offset.
     """
     n = E.shape[0]
-    eps1 = np.zeros(n)
+    eps1 = np.full(n, eps_inf, dtype=np.float64)
+    factor = 2.0 / np.pi
 
-    for i in range(n):
+    # Parallel loop for speed
+    for i in prange(n):
         Ei = E[i]
-        sum_val = 0.0
-
-        for j in range(n - 1):
-            Ej1 = E[j]
-            Ej2 = E[j + 1]
-            dE = Ej2 - Ej1
-
-            denom1 = Ej1**2 - Ei**2
-            denom2 = Ej2**2 - Ei**2
-
-            if np.abs(denom1) < 1e-10 or np.abs(denom2) < 1e-10:
-                continue  # Skip near singularities
-
-            integrand1 = Ej1 * eps2[j]     / denom1
-            integrand2 = Ej2 * eps2[j + 1] / denom2
-
-            sum_val += 0.5 * (integrand1 + integrand2) * dE
-
-        eps1[i] = epsilon_inf + (2.0 / np.pi) * sum_val
-
-    return eps1
-
-
-
-@njit(cache=True)
-def _epsilon1_trapezoidal_kramers_kronig(E: np.ndarray, E_full: np.ndarray, eps2_full: np.ndarray, epsilon_inf: float) -> np.ndarray:
-    """
-    Compute the real part of the dielectric function ε₁(E) using the Kramers–Kronig relation
-    with proper treatment of the singularity at E = E'.
-    """
-    eps1 = np.zeros_like(E)
-
-    for i in range(E.shape[0]):
-        Ei = E[i]
+        Ei_sq = Ei * Ei
+        val_i = eps2[i] # eps2 at the singularity
+        
         integral = 0.0
+        
+        for j in range(n - 1):
+            Ej = E[j]
+            Ej1 = E[j+1]
+            
+            # --- Point j ---
+            denom_j = Ej**2 - Ei_sq
+            # Handle Singularity Limit
+            if np.abs(denom_j) < 1e-12:
+                # Use neighbor approximation for the finite limit
+                term_j = (E[j-1] * eps2[j-1] - Ei * val_i) / (E[j-1]**2 - Ei_sq) if j > 0 else 0.0
+            else:
+                term_j = (Ej * eps2[j] - Ei * val_i) / denom_j
 
-        for j in range(E_full.shape[0] - 1):
-            Ej1 = E_full[j]
-            Ej2 = E_full[j + 1]
-            dE = Ej2 - Ej1
-
-            # Skip points where E_j == E_i (singularity)
-            if abs(Ej1 - Ei) < 1e-10 or abs(Ej2 - Ei) < 1e-10:
-                continue
-
-            denom1 = Ej1**2 - Ei**2
-            denom2 = Ej2**2 - Ei**2
-
-            val1 = Ej1 * eps2_full[j] / denom1
-            val2 = Ej2 * eps2_full[j + 1] / denom2
-
-            integral += 0.5 * (val1 + val2) * dE
-
-        eps1[i] = epsilon_inf + (2.0 / np.pi) * integral
-
+            # --- Point j+1 ---
+            denom_j1 = Ej1**2 - Ei_sq
+            if np.abs(denom_j1) < 1e-12:
+                term_j1 = (E[j+2] * eps2[j+2] - Ei * val_i) / (E[j+2]**2 - Ei_sq) if j+2 < n else 0.0
+            else:
+                term_j1 = (Ej1 * eps2[j+1] - Ei * val_i) / denom_j1
+            
+            # Trapezoidal Rule on smoothed function
+            dE = Ej1 - Ej
+            integral += 0.5 * (term_j + term_j1) * dE
+            
+        eps1[i] += factor * integral
+        
     return eps1
 
-@njit(cache=True)
-def compute_cody_lorentz_complex_nk(E: np.ndarray, Eg: float, Ep: float, A: float, E0: float, Gamma: float, Et: float, Eu: float, E_full: np.ndarray, epsilon_inf: float):
-    """
-    Compute complex refractive index (n + ik) using Cody-Lorentz model.
-    """
 
-    eps2 = _epsilon2_cody_lorentz(E, Eg, Ep, A, E0, Gamma, Et, Eu)
-    print (eps2[::5])
-    #eps1 = _eps1_kramer_kronig(E, eps2, epsilon_inf)           
-    eps1 = _epsilon1_trapezoidal_kramers_kronig(E, E_full, eps2, epsilon_inf)
-    print (eps1[::5])
+@njit(cache=True)
+def _compute_eps2_cody_lorentz(E: np.ndarray,
+                               Eg: float, 
+                               Et: float, 
+                               Ep: float, 
+                               A: float, 
+                               Eu: float, 
+                               Gamma: float) -> np.ndarray:
+    """Internal helper to calculate eps2 for the Single Cody-Lorentz Model."""
+    eps2 = np.zeros_like(E, dtype=np.float64)
+    E_sq = E**2
+
+    # --- 1. Band-to-Band Region (E >= Et) ---
+    mask_band = E >= Et
     
-    eps_abs = np.sqrt(eps1**2 + eps2**2)
-    return np.sqrt((eps_abs + eps1) / 2) + 1j * np.sqrt((eps_abs - eps1) / 2)
+    # Cody Factor: (E - Eg)^2 / E^2
+    cody_factor = np.zeros_like(E)
+    safe_E_sq = np.maximum(E_sq, 1e-12)
+    
+    mask_cody = (E > Eg) & mask_band
+    cody_factor[mask_cody] = (E[mask_cody] - Eg)**2 / safe_E_sq[mask_cody]
+    
+    # Lorentz Term: E * Gamma / D(E)
+    denom_band = (E_sq - Ep**2)**2 + (E * Gamma)**2
+    lorentz_term = (E * Gamma) / np.maximum(denom_band, 1e-12)
+    
+    eps2[mask_band] = A * cody_factor[mask_band] * lorentz_term[mask_band]
+    
+    # --- 2. Urbach Tail Region (E < Et) ---
+    Et_sq = Et**2
+    if Et > Eg:
+        cf_Et = (Et - Eg)**2 / Et_sq
+    else:
+        cf_Et = 0.0
+        
+    den_Et = (Et_sq - Ep**2)**2 + (Et * Gamma)**2
+    lb_Et = (Et * Gamma) / np.maximum(den_Et, 1e-12)
+    A_t = A * cf_Et * lb_Et
+    
+    mask_tail = E < Et
+    E_tail = E[mask_tail]
+    
+    if E_tail.size > 0:
+        valid_tail = E_tail > 1e-6
+        E_valid = E_tail[valid_tail]
+        
+        val_tail = A_t * (Et / E_valid) * np.exp((E_valid - Et) / Eu)
+        
+        temp_tail = np.zeros_like(E_tail)
+        temp_tail[valid_tail] = val_tail
+        eps2[mask_tail] = temp_tail
+
+    return np.maximum(eps2, 0.0)
+
 
 @njit(cache=True)
-def compute_c_cody_lorentz_complex_nk(E: np.ndarray, A: float, Eg: float, Ep: float, E0: float, Gamma: float, Et: float, epsilon_inf: float):
+def compute_nk_cody_lorentz(target_E: np.ndarray,
+                             params_arr: np.ndarray,
+                             eps_inf: float) -> np.ndarray:
     """
-    Compute complex refractive index (n + ik) using Continous-Cody-Lorentz model with Kramers-Kronig relations.
-
+    Numba driver to compute complex refractive index with Grid Extrapolation.
+    
+    Automatically expands the integration grid to 0-80 eV to capture 
+    UV poles correctly, then interpolates back to target_E.
     """
-    Eu = calc_Eu(E0, Et, Gamma, Ep, Eg)
-    eps2 = _eps2_c_cody_lorentz(E, A, Eg, Ep, E0, Gamma, Et, Eu)
-    eps1 = _eps1_kramer_kronig(E, eps2, epsilon_inf)                            
-    #eps1 = _eps1_kramer_kronig_optimized(E, eps2, epsilon_inf)           
-    eps_abs = np.sqrt(eps1**2 + eps2**2)
-    return np.sqrt((eps_abs + eps1) / 2) + 1j * np.sqrt((eps_abs - eps1) / 2)
+    Eg, Et, Ep, A, Eu, Gamma = params_arr[0], params_arr[1], params_arr[2], params_arr[3], params_arr[4], params_arr[5]
+    
+    # 1. Create Extended Grid (0 to 80 eV)
+    # This is critical. If we only integrate 1.5-3.0 eV, we miss the Si/SiO2 poles at 4-11 eV.
+    extrap_max = 80.0
+    extrap_step = 0.05
+    base_grid = np.arange(0.01, extrap_max, extrap_step)
+    
+    # Merge with target grid to ensure precision at requested points
+    combined_E = np.concatenate((base_grid, target_E))
+    full_E = np.sort(combined_E)
+    
+    # Remove duplicates to prevent div/0 (naive approach for Numba)
+    # We construct a mask of unique values
+    unique_mask = np.empty(full_E.shape[0], dtype=np.bool_)
+    unique_mask[0] = True
+    unique_mask[1:] = np.diff(full_E) > 1e-6
+    calc_E = full_E[unique_mask]
+    
+    # 2. Calculate eps2 on FULL grid
+    eps2_full = _compute_eps2_cody_lorentz(calc_E, Eg, Et, Ep, A, Eu, Gamma)
+    
+    # 3. Calculate eps1 via Maclaurin KK on FULL grid
+    eps1_full = kramers_kronig_maclaurin(calc_E, eps2_full, eps_inf)
+    
+    # 4. Interpolate eps1 back to target grid
+    eps1_target = np.interp(target_E, calc_E, eps1_full)
+    
+    # 5. Calculate eps2 exactly on target grid
+    eps2_target = _compute_eps2_cody_lorentz(target_E, Eg, Et, Ep, A, Eu, Gamma)
+    
+    # 6. Convert to Refractive Index
+    eps_complex = eps1_target + 1j * eps2_target
+    return np.sqrt(eps_complex)
 
+
+# --- Main Class ---
 
 class CodyLorentz(Material):
-    """Cody–Lorentz model with Numba acceleration.
-
-    This class models the dielectric response of materials using the Cody-Lorentz model,
-    which combines a Lorentzian oscillator for interband transitions with an Urbach-like
-    absorption edge below the bandgap.
-        
-    Attributes:
-        A (float): Amplitude coefficient controlling the strength of absorption.
-        E0 (float): Energy parameter in eV, representing the peak energy position.
-        Gamma (float): Broadening parameter in eV, representing the width of the absorption edge.
-        Eg (float): Bandgap energy in eV.
-        epsilon_inf (float): High-frequency dielectric constant. Default is 1.0.
-        h_c_by_e_nm (float): Pre-calculated value of h * c / e in nm for conversion purposes.
-    
-    Args:
-        params (Dict[str, Union[float, int]]): Dictionary containing the model parameters.
-            Required keys: 'E0', 'Gamma', 'Eg'.
-            Optional key: 'epsilon_inf' (default is 1.0).
-            wavelength (Optional[np.ndarray]): Array of wavelengths in nm for which to evaluate
-            the dielectric function. If provided, the wavelength range will be set.
-            
-    Example:
-        >>> # Create Cody-Lorentz model for silicon-like material
-        >>> params = {
-        ...     'E0': 3.2,      # Resonance energy position [eV]
-        ...     'Gamma': 0.15,   # Damping constant [eV]
-        ...     'Eg': 1.1       # Band gap energy [eV] (similar to Si at room temperature)
-        ... }
-        >>>
-        >>> # With wavelength range (visible spectrum: 300-800 nm)
-        >>> wavelengths = np.linspace(300, 800, 500)  # nm from 300 to 800nm
-        >>> model = CodyLorentz(params, wavelengths)
+    """
+    Simple Continuous Cody-Lorentz (CCL) Model.
     """
 
-    def __init__(self,
-                 params: Dict[str, Union[float, int]],
+    def __init__(self, 
+                 params: Dict[str, Union[float, int]], 
                  wavelength: Optional[np.ndarray] = None):
+        super().__init__({'A': params.get('A', 0.0)}, wavelength)
         
-        """Initialize the Cody–Lorentz model.
+        self.epsilon_inf = float(params.get('epsilon_inf', 1.0))
+        self.Eg = float(params.get('Eg', 0.0))
+        self.Et = float(params.get('Et', 0.0))
+        self.Ep = float(params.get('Ep', 0.0))
+        self.A = float(params.get('A', 0.0))
+        self.Eu = float(params.get('Eu', 0.1))
+        self.Gamma = float(params.get('Gamma', 0.0))
 
-        Args:
-            params (Dict[str, Union[float, int]]): Dictionary containing the model parameters.
-                Required keys: 'A', 'E0', 'Gamma', 'Eg'.
-                Optional key: 'epsilon_inf' (default is 1.0).
-            wavelength (Optional[np.ndarray]): Array of wavelengths in nm for which to evaluate
-                the dielectric function. If provided, the wavelength range will be set.
+        self._params_arr = np.array([
+            self.Eg, self.Et, self.Ep, self.A, self.Eu, self.Gamma
+        ], dtype=np.float64)
         
-        Raises:
-            KeyError: If any required parameter ('E0', 'Gamma', 'Eg') is missing from `params`.
-        """
-        self.Eg = params['Eg']
-        self.Ep = params['Ep']
-        self.A = params['A']
-        self.E0 = params['E0']
-        self.Gamma = params['Gamma']
-        self.Et = params['Eg']
-        self.Eu = params['Eu']
-        self.epsilon_inf = params.get('epsilon_inf', 1.0)
-        #super().__init__(params, wavelength)
-
-        self.h_c_by_eV_nm = 1239.8419843320028 # ready calculated h * c / eV in nm
+        self.h_c_by_eV_nm = 1239.8419843320028
 
         if wavelength is not None:
             self.set_wavelength_range(wavelength)
 
     def set_wavelength_range(self, wavelength: np.ndarray) -> None:
-        """Set the wavelength range for calculations."""        
         self.wavelength = np.asarray(wavelength, dtype=np.float64)
-        self.E = compute_energy(self.wavelength, self.h_c_by_eV_nm)  # Convert to energy in eV
-        e_min = max(1e-3, np.min(self.E))
-        e_max = max(10.0, np.max(self.E) + 2.0)  # Add buffer above target range
-        N_samples = get_num_points_for_kk(e_min, e_max)
-        self.E_full = np.linspace(e_min, e_max, N_samples)
+        self.E = compute_energy(self.wavelength, self.h_c_by_eV_nm) 
 
-    def complex_refractive_index(self,
-                              wavelength: Optional[np.ndarray] = None) -> np.ndarray:
-        """Return the complex refractive index (n + ik)."""
-        if wavelength is not None:
-            self.set_wavelength_range(wavelength)
-        print (len(self.wavelength), len(self.E))
-        self.nk = compute_cody_lorentz_complex_nk(self.E, self.Eg, self.Ep, self.A, self.E0, self.Gamma, self.Et, self.Eu, self.E_full, self.epsilon_inf)
-        return self.nk
-
-
-    def get_params(self) -> Dict[str, float]:
-        """Return material parameters."""
-        base_params = super().get_params()
-        base_params.update({
-            'E0': self.E0,
-            'Gamma': self.Gamma,
-            'Eg': self.Eg,
-            'epsilon_inf': self.epsilon_inf,
-        })
-        return base_params
-
-class ContinousCodyLorentz(Material):
-    """Continous-Cody–Lorentz model with Numba acceleration.
-
-    This class implements the Continous-Cody–Lorentz dispersion model for optical materials.
-    The model is used to describe the complex dielectric function of a material over a range
-    of wavelengths. The implementation includes optional acceleration using Numba for improved performance.
-    
-    "New dispersion model for band gap tracking": https://doi.org/10.1016/j.tsf.2015.10.024
-    
-    Attributes:
-        A (float): Amplitude coefficient controlling the strength of absorption.
-        Eg (float): Bandgap energy (in eV), below which absorption is zero.
-        Ep (float): Parameter related to oscillator strength or broadening in the model.
-        E0 (float): Resonance energy of the oscillator (in eV).
-        Gamma (float): Broadening (damping) parameter of the oscillator (in eV).
-        Et (float): Transition energy (in eV) between the Urbach tail and Lorentz oscillator regions.
-        epsilon_inf (float): High-frequency dielectric constant. Default is 1.0.
-        h_c_by_e_nm (float): Pre-calculated value of h * c / e in nm for conversion purposes.
-    
-    Args:
-        params (Dict[str, Union[float, int]]): Dictionary containing the model parameters.
-            Required keys: 'E0', 'Gamma', 'Eg'.
-            Optional key: 'epsilon_inf' (default is 1.0).
-        wavelength (Optional[np.ndarray]): Array of wavelengths in nm for which to evaluate
-            the dielectric function. If provided, the wavelength range will be set.
-            
-    Example:
-        >>> # Create a Cody-Lorentz material model
-        >>> params = {
-        ...     'E0': 3.5,      # Resonance energy [eV]
-        ...     'Gamma': 0.4,   # Damping constant [eV]
-        ...     'Eg': 2.0       # Band gap energy [eV]
-        ... }
-        >>>
-        >>> # With wavelength range
-        >>> wavelengths = np.linspace(150, 700, 300)  # nm from 150 to 700nm
-        >>> material = CodyLorentz(params, wavelengths)
-        >>>
-        >>> # Without wavelength range (use default or set later)
-        >>> material = CodyLorentz(params)
-    """
-
-    def __init__(self,
-                 params: Dict[str, Union[float, int]],
-                 wavelength: Optional[np.ndarray] = None):
-        
-        """Initialize the Cody–Lorentz model.
-
-        Args:
-            params (Dict[str, Union[float, int]]): Dictionary containing the model parameters.
-                Required keys: 'A', 'Eg', 'Ep', 'E0', 'Gamma', 'Et',
-                Optional key: 'epsilon_inf' (default is 1.0).
-            wavelength (Optional[np.ndarray]): Array of wavelengths in nm for which to evaluate
-                the dielectric function. If provided, the wavelength range will be set.
-        
-        Raises:
-            KeyError: If any required parameter ('E0', 'Gamma', 'Eg') is missing from `params`.
-        """
-        self.A = params['A']
-        self.Eg = params['Eg']
-        self.Ep = params['Ep']
-        self.E0 = params['E0']
-        self.Gamma = params['Gamma']
-        self.Et = params['Et']
-        self.epsilon_inf = params.get('epsilon_inf', 1.0)
-        #super().__init__(params, wavelength)
-
-        self.h_c_by_eV_nm = 1239.8419843320028 # ready calculated h * c / eV in nm
-
+    def complex_refractive_index(self, wavelength: Optional[np.ndarray] = None) -> np.ndarray:
         if wavelength is not None:
             self.set_wavelength_range(wavelength)
 
-    def set_wavelength_range(self, wavelength: np.ndarray) -> None:
-        """Set the wavelength range for calculations."""
-        self.wavelength = np.asarray(wavelength, dtype=np.float64)
-        self.E = compute_energy(self.wavelength, self.h_c_by_eV_nm) # Convert to energy in eV
+        if not hasattr(self, 'E'):
+             raise AttributeError("Wavelength range must be set.")
 
-    def complex_refractive_index(self,
-                              wavelength: Optional[np.ndarray] = None) -> np.ndarray:
-        """Return the complex refractive index (n + ik)."""
-        if wavelength is not None:
-            self.set_wavelength_range(wavelength)
-        
-        self.nk = compute_c_cody_lorentz_complex_nk(self.E, self.A, self.Eg, self.Ep, self.E0, self.Gamma, self.Et, self.epsilon_inf)
+        self.nk = compute_nk_cody_lorentz(
+            self.E,
+            self._params_arr,
+            self.epsilon_inf
+        )
+
         return self.nk
 
     def get_params(self) -> Dict[str, float]:
-        """Return material parameters."""
-        base_params = super().get_params()
-        base_params.update({
-            'E0': self.E0,
-            'Gamma': self.Gamma,
-            'Eg': self.Eg,
+        return {
             'epsilon_inf': self.epsilon_inf,
-        })
-        return base_params
+            'Eg': self.Eg,
+            'Et': self.Et,
+            'Ep': self.Ep,
+            'A': self.A,
+            'Eu': self.Eu,
+            'Gamma': self.Gamma
+        }
+
+
+# --- Execution Block: Examples and Plotting ---
+
+if __name__ == "__main__":
+    # 1. Define Spectral Range
+    # 200 nm to 1200 nm
+    wavelengths = np.linspace(200, 1200, 1001)
+
+    # 2. Define Material Parameters
+    
+    # a-Si: Bandgap ~1.64 eV
+    si_params = {
+        'Eg': 1.64,
+        'Et': 1.80,
+        'Ep': 3.40,
+        'A': 60.0,
+        'Eu': 0.15,
+        'Gamma': 2.4,
+        'epsilon_inf': 1.0
+    }
+
+    # SiO2: Peak ~11 eV (Far UV)
+    # NOTE: With grid extrapolation to 80eV, the KK integral will now SEE the 11eV peak
+    # even though our calc range stops at 200nm (6.2eV). 
+    # We can lower epsilon_inf closer to 1.0 (physical) because the integral provides the index.
+    sio2_params = {
+        'Eg': 8.0,
+        'Et': 8.0,
+        'Ep': 11.0,
+        'A': 100.0,
+        'Eu': 0.05,
+        'Gamma': 0.5,
+        'epsilon_inf': 1.0 # The UV pole integration will lift 'n' naturally!
+    }
+
+    # 3. Instantiate and Compute
+    si_model = CodyLorentz(si_params, wavelengths)
+    si_nk = si_model.complex_refractive_index()
+    si_n = si_nk.real
+    si_k = si_nk.imag
+
+    sio2_model = CodyLorentz(sio2_params, wavelengths)
+    sio2_nk = sio2_model.complex_refractive_index()
+    sio2_n = sio2_nk.real
+    sio2_k = sio2_nk.imag
+
+    # 4. Print n and k every 100 nm
+    print(f"{'Wavelength (nm)':<20} | {'Si (n)':<10} {'Si (k)':<10} | {'SiO2 (n)':<10} {'SiO2 (k)':<10}")
+    print("-" * 75)
+    
+    target_wls = np.arange(200, 1201, 100)
+    
+    for target in target_wls:
+        idx = (np.abs(wavelengths - target)).argmin()
+        wl = wavelengths[idx]
+        print(f"{wl:<20.1f} | {si_n[idx]:<10.3f} {si_k[idx]:<10.3f} | {sio2_n[idx]:<10.3f} {sio2_k[idx]:<10.3f}")
+
+    # 5. Plotting in Subplots
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # Plot Silicon
+    ax1 = axes[0]
+    ax1.plot(wavelengths, si_n, 'b-', label='n')
+    ax1.plot(wavelengths, si_k, 'r--', label='k')
+    ax1.set_title("Silicon (a-Si) Model")
+    ax1.set_xlabel("Wavelength (nm)")
+    ax1.set_ylabel("Optical Constants")
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    # Plot SiO2
+    ax2 = axes[1]
+    ax2.plot(wavelengths, sio2_n, 'b-', label='n')
+    ax2.plot(wavelengths, sio2_k, 'r--', label='k')
+    ax2.set_title("Silicon Dioxide (SiO2) Model")
+    ax2.set_xlabel("Wavelength (nm)")
+    ax2.set_ylabel("Optical Constants")
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    ax2.set_ylim(0, 2.5) 
+
+    plt.tight_layout()
+    plt.show()

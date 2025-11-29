@@ -7,261 +7,450 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 """
 
 import time
+from typing import Tuple
 import numpy as np
+import numpy.typing as npt
 from numba import njit, prange
 
-__all__ = ["lichtenecker_eps", "looyenga_eps", "maxwell_garnett_eps", "bruggeman_eps" ]
+__all__ = [
+    "lichtenecker_eps",
+    "looyenga_eps",
+    "general_power_law_eps",
+    "maxwell_garnett_eps",
+    "bruggeman_eps",
+    "mori_tanaka_eps",
+    "wiener_bounds",
+    "hashin_shtrikman_bounds",
+    "roughness_interface_eps",
+]
 
 
-@njit(cache=True)
-def lichtenecker_eps(n_i: np.ndarray,
-                     n_h: np.ndarray,
-                     f: float) -> np.ndarray:
-    """
-    Lichtenecker effective permittivity for a two‑component composite.
+# OPTIMIZATION NOTE:
+# Removed explicit Numba signatures to allow flexible default argument usage.
+# Numba will now lazy-compile based on the input types provided at runtime.
+# fastmath=True enabled globally for hardware-accelerated exp/log/pow.
+
+@njit(cache=True, fastmath=True, parallel=True)
+def lichtenecker_eps(
+    n_i: npt.NDArray[np.complex128],
+    n_h: npt.NDArray[np.complex128],
+    f: float,
+) -> npt.NDArray[np.complex128]:
+    """Calculates Lichtenecker effective permittivity using logarithmic mixing.
     
-    The Lichtenecker (or logarithmic mixing) rule assumes that the
-    *logarithm* of the effective permittivity is the weighted sum of
-    the logs of the constituents’ permittivities:
+    The Lichtenecker mixing rule (also known as the logarithmic mixture law) is
+    a mathematical generalization rather than a derivation from first physical 
+    principles. It sits between the Wiener upper bound (arithmetic mean, 
+    parallel capacitors) and lower bound (harmonic mean, series capacitors).
     
-        ln(ε_eff) = f · ln(ε_i) + (1 − f) · ln(ε_h),
-    
-    where ``ε`` denotes the complex permittivity, i.e. ε = n².
-    The effective refractive index is then obtained by exponentiation
-    and square‑rooting:
-    
-        n_eff = sqrt(exp(ln(ε_eff))).
-    
+    Formula:
+        ε_eff = exp( f * ln(ε_i) + (1 - f) * ln(ε_h) )
+
     Args:
-        n_i (np.ndarray, dtype=complex):
-            Inclusion refractive index per wavelength.
-        n_h (np.ndarray, dtype=complex):
-            Host refractive index per wavelength.
-        f (float):
-            Volume fraction of the inclusion (0 ≤ f ≤ 1).
-    
+        n_i: Inclusion refractive index (complex128 array).
+        n_h: Host refractive index (complex128 array).
+        f: Volume fraction of inclusion (scalar float, 0 <= f <= 1).
+
     Returns:
-        eps_eff (np.ndarray, dtype=complex):
-            Effective permittivity ε = n² for each wavelength calculated with
-            the Lichtenecker rule.
-            
-    References
-        Lichtenecker, W. (1907). *Physik der Bänder*. Zeitschrift für Physik,
-        5, 123–127.
-        DOI:10.1002/andp.19070510402
+        Effective permittivity (epsilon) as a complex128 array.
     """
     eps_i = n_i * n_i
     eps_h = n_h * n_h
-    log_eps_eff = f * np.log(eps_i) + (1 - f) * np.log(eps_h)
+    
+    # Logarithmic mixing: f * ln(e_i) + (1-f) * ln(e_h)
+    log_eps_eff = f * np.log(eps_i) + (1.0 - f) * np.log(eps_h)
+    
     return np.exp(log_eps_eff)
 
 
-
-@njit(cache=True, fastmath=True)
-def looyenga_eps(n_i, n_h, f):
-    """
-    Looyenga effective permittivity for two complex refractive indices.
+@njit(cache=True, fastmath=True, parallel=True)
+def looyenga_eps(
+    n_i: npt.NDArray[np.complex128],
+    n_h: npt.NDArray[np.complex128],
+    f: float,
+) -> npt.NDArray[np.complex128]:
+    """Calculates Looyenga effective permittivity (Landau-Lifshitz-Looyenga).
     
-    The Looyenga mixing rule is an empirical formula that works well for
-    isotropic mixtures with moderate contrasts in refractive index.
-    For complex refractive indices it reads
-
-        ε_eff = [ f ε_i^{1/3} + (1−f) ε_h^{1/3} ]³ ,
-
-    where ``ε`` denotes the permittivity, i.e. the square of the refractive
-    index.  The cube‑root is taken in the complex sense and therefore the
-    principal branch of the power function is used.
+    Formula:
+        (ε_eff)^(1/3) = f * (ε_i)^(1/3) + (1 - f) * (ε_h)^(1/3)
 
     Args:
-        n_i, n_h : array_like, complex
-            Inclusion and host refractive indices (per wavelength).
-        f : float
-            Volume fraction of the inclusion (0 ≤ f ≤ 1).
+        n_i: Inclusion refractive index (complex128 array).
+        n_h: Host refractive index (complex128 array).
+        f: Volume fraction of inclusion (scalar float, 0 <= f <= 1).
 
-    Returns
-        eps_eff : ndarray, complex
-            Effective permittivity (ε = n²) for each wavelength.
-    
-    References
-        Looyenga, H. (1945). *The Theory of Composite Materials*. In
-        Proceedings of the IRE, vol. 33, no. 4, pp. 451‑463.
-        DOI:10.1109/PROC.1945.104
+    Returns:
+        Effective permittivity (epsilon) as a complex128 array.
     """
     eps_i = n_i * n_i
     eps_h = n_h * n_h
-    cbrt_eps_i = eps_i ** (1 / 3)
-    cbrt_eps_h = eps_h ** (1 / 3)
-    cbrt_eps_eff = f * cbrt_eps_i + (1 - f) * cbrt_eps_h
-    return cbrt_eps_eff ** 3
+    
+    # Pre-calculate powers (1/3)
+    power = 1.0 / 3.0
+    cbrt_eps_i = eps_i ** power
+    cbrt_eps_h = eps_h ** power
+    
+    # Linear interpolation of cube roots
+    cbrt_eps_eff = f * cbrt_eps_i + (1.0 - f) * cbrt_eps_h
+    
+    return cbrt_eps_eff ** 3.0
 
 
-@njit(cache=True)
-def maxwell_garnett_eps(n_i, n_h, f):
-    """
-    Maxwell–Garnett effective permittivity for a two‑component mixture.
+@njit(cache=True, fastmath=True, parallel=True)
+def general_power_law_eps(
+    n_i: npt.NDArray[np.complex128],
+    n_h: npt.NDArray[np.complex128],
+    f: float,
+    alpha: float = 0.5,
+) -> npt.NDArray[np.complex128]:
+    """Calculates the General Power Law (Birchak) effective permittivity.
     
-    The Maxwell‑Garnett formula is the classic mixing rule for dilute
-    inclusions embedded in a host matrix.  For complex refractive indices
-    ``n_i`` (inclusion) and ``n_h`` (host) it returns the effective
-    permittivity ε_eff = n_eff² that satisfies
+    This generalizes several other models by tuning the exponent alpha.
     
-        ε_eff = ε_h * [(ε_i + 2ε_h + 2f(ε_i‑ε_h))
-                       / (ε_i + 2ε_h – f(ε_i‑ε_h))],
-    
-    where ``f`` is the volume fraction of the inclusion.
-    
+    Common Alpha Values:
+        1.0  : Linear mixing of Permittivity (Wiener Upper Bound)
+        0.5  : Linear mixing of Refractive Index (Birchak)
+        1/3  : Looyenga (Landau-Lifshitz-Looyenga)
+        0.0  : Lichtenecker (Limit as alpha -> 0)
+       -1.0  : Inverse mixing of Permittivity (Wiener Lower Bound)
+
+    Formula:
+        ε_eff = ( f * ε_i^α + (1-f) * ε_h^α )^(1/α)
+
     Args:
-        n_i (np.ndarray, dtype=complex):
-            Inclusion refractive index per wavelength.
-        n_h (np.ndarray, dtype=complex):
-            Host refractive index per wavelength.
-        f (float):
-            Volume fraction of the inclusion (0 ≤ f ≤ 1).
-    
+        n_i: Inclusion refractive index.
+        n_h: Host refractive index.
+        f: Volume fraction (scalar float).
+        alpha: Power exponent. Default 0.5 (Refractive Index mixing).
+
     Returns:
-        eps_eff (np.ndarray, dtype=complex):
-            Effective permittivity ε = n² for each wavelength.
-        
+        Effective permittivity (epsilon) as a complex128 array.
     """
+    eps_i = n_i * n_i
+    eps_h = n_h * n_h
     
+    # Handle alpha close to 0 (Lichtenecker case) to avoid division by zero
+    if abs(alpha) < 1e-6:
+        log_eps_eff = f * np.log(eps_i) + (1.0 - f) * np.log(eps_h)
+        return np.exp(log_eps_eff)
+
+    # General Power Law
+    pow_eps_i = eps_i ** alpha
+    pow_eps_h = eps_h ** alpha
     
-    eps_i = n_i **2
-    eps_h = n_h ** 2
-    eps_subtract = eps_i - eps_h
-    eps2_h = 2 * eps_h
-    numerator = eps_i + eps2_h + 2 * f * (eps_subtract)
-    denominator = eps_i + eps2_h - f * (eps_subtract)
-    #if np.abs(denominator) < 1e-12:
-    #    return np.nan + 0j
+    pow_eps_eff = f * pow_eps_i + (1.0 - f) * pow_eps_h
+    
+    return pow_eps_eff ** (1.0 / alpha)
+
+
+@njit(cache=True, fastmath=True)
+def maxwell_garnett_eps(
+    n_i: npt.NDArray[np.complex128],
+    n_h: npt.NDArray[np.complex128],
+    f: float,
+) -> npt.NDArray[np.complex128]:
+    """Calculates Maxwell-Garnett effective permittivity.
+
+    Strictly valid only for dilute mixtures (f << 1). Assumes spherical inclusions.
+    
+    Formula:
+        ε_eff = ε_h * [ (ε_i + 2ε_h + 2f(ε_i - ε_h)) / (ε_i + 2ε_h - f(ε_i - ε_h)) ]
+
+    Args:
+        n_i: Inclusion refractive index (complex128 array).
+        n_h: Host refractive index (complex128 array).
+        f: Volume fraction of inclusion (scalar float, 0 <= f <= 1).
+
+    Returns:
+        Effective permittivity (epsilon) as a complex128 array.
+    """
+    eps_i = n_i * n_i
+    eps_h = n_h * n_h
+    
+    eps_diff = eps_i - eps_h
+    eps_h_2 = 2.0 * eps_h
+    
+    numerator = eps_i + eps_h_2 + 2.0 * f * eps_diff
+    denominator = eps_i + eps_h_2 - f * eps_diff
+    
     return eps_h * (numerator / denominator)
 
 
-@njit(cache=True, parallel=True)
-def bruggeman_eps(n_i: np.ndarray,
-                  n_h: np.ndarray,
-                  f   : float,
-                  max_iter: int = 100,
-                  tol     : float = 1e-9) -> np.ndarray:
+@njit(cache=True, fastmath=True, parallel=True)
+def bruggeman_eps(
+    n_i: npt.NDArray[np.complex128],
+    n_h: npt.NDArray[np.complex128],
+    f: float,
+    max_iter: int = 100,
+    tol: float = 1e-9,
+) -> npt.NDArray[np.complex128]:
+    """Calculates Bruggeman effective permittivity via Newton-Raphson.
+
+    Implicit Equation:
+        f * (ε_i - ε_eff)/(ε_i + 2ε_eff) + (1 - f) * (ε_h - ε_eff)/(ε_h + 2ε_eff) = 0
+
+    Args:
+        n_i: Inclusion refractive index (complex128 array).
+        n_h: Host refractive index (complex128 array).
+        f: Volume fraction of inclusion (scalar float).
+        max_iter: Max Newton iterations.
+        tol: Convergence tolerance.
+
+    Returns:
+        Effective permittivity (epsilon) as a complex128 array.
     """
-    Bruggeman effective permittivity for a two‑component composite.
-
-    The Bruggeman mixing rule is implicit; it requires solving the
-    equation
-
-        f * (ε_i - ε_eff) / (ε_i + 2 ε_eff)
-      + (1−f) * (ε_h - ε_eff) / (ε_h + 2 ε_eff) = 0,
-
-    where ``ε`` denotes the complex permittivity, i.e. the square of
-    the refractive index.  The root is found with a Newton–Raphson
-    iteration for each wavelength independently.
-
-    Args
-        n_i, n_h : ndarray (complex)
-            Inclusion and host refractive indices per wavelength.
-        f : float
-            Volume fraction of the inclusion (0 ≤ f ≤ 1).
-        max_iter : int
-            Maximum Newton iterations per wavelength.
-        tol : float
-            Convergence tolerance for the Newton step.
-
-    Returns
-        eps_eff : ndarray (complex)
-            Effective permittivity ε = n² for each wavelength.  The array
-            shape matches that of ``n_i`` and ``n_h`` after broadcasting.
-    """
-    # Convert to permittivities once
-    eps_i = n_i * n_i          # ε_i = n_i²
-    eps_h = n_h * n_h          # ε_h = n_h²
-
-    # Initial guess: simple arithmetic mean
-    eps_eff = (eps_i + eps_h) / 2.0
-
+    eps_i = n_i * n_i
+    eps_h = n_h * n_h
     
-    # Parallel over wavelengths – each index is independent.
-    for i in prange(eps_i.size):
-        # Newton iterations for this single wavelength
+    n_len = len(eps_i)
+    eps_eff = np.empty(n_len, dtype=np.complex128)
+    
+    # Initialization: Arithmetic mean
+    for k in prange(n_len):
+        eps_eff[k] = (eps_i[k] + eps_h[k]) * 0.5
+
+    # Parallel Solver
+    for i in prange(n_len):
+        e_i_val = eps_i[i]
+        e_h_val = eps_h[i]
+        f_val = f
+        inv_f = 1.0 - f_val
+        
         for _ in range(max_iter):
-            num_i = eps_i[i] - eps_eff[i]
-            den_i = eps_i[i] + 2.0 * eps_eff[i]
+            # Term 1: f * (e_i - e_eff) / (e_i + 2e_eff)
+            num_i = e_i_val - eps_eff[i]
+            den_i = e_i_val + 2.0 * eps_eff[i]
+            term_i = num_i / den_i
+            
+            # Term 2: (1-f) * (e_h - e_eff) / (e_h + 2e_eff)
+            num_h = e_h_val - eps_eff[i]
+            den_h = e_h_val + 2.0 * eps_eff[i]
+            term_h = num_h / den_h
 
-            num_h = eps_h[i] - eps_eff[i]
-            den_h = eps_h[i] + 2.0 * eps_eff[i]
-
-            f_total = (f   * (num_i / den_i) +
-                       (1-f) * (num_h / den_h))
-
-            df = (-f   * ((3.0 * eps_i[i]) / (den_i * den_i)) -
-                  (1-f) * ((3.0 * eps_h[i]) / (den_h * den_h)))
-
-            delta = -f_total / (df + 1e-12)    # tiny regulariser to avoid div‑by‑zero
-
-            eps_eff[i] += delta                # **element‑wise update**
-
-            if np.abs(delta) < tol:
+            # F(e_eff)
+            f_total = f_val * term_i + inv_f * term_h
+            
+            # Derivative F'(e_eff)
+            deriv_i = (-3.0 * e_i_val) / (den_i * den_i)
+            deriv_h = (-3.0 * e_h_val) / (den_h * den_h)
+            
+            df = f_val * deriv_i + inv_f * deriv_h
+            
+            # Newton Step
+            delta = -f_total / (df + 1e-15)
+            
+            eps_eff[i] += delta
+            
+            # Convergence check
+            if (delta.real*delta.real + delta.imag*delta.imag) < (tol*tol):
                 break
-
+                
     return eps_eff
 
 
-# --- Benchmarking ---
-def benchmark_models(n_samples=500, n_iterations=100):
-    rng = np.random.default_rng(0)
+@njit(cache=True, fastmath=True)
+def mori_tanaka_eps(
+    n_i: npt.NDArray[np.complex128],
+    n_h: npt.NDArray[np.complex128],
+    f: float,
+    L: float = 0.333333333333,
+) -> npt.NDArray[np.complex128]:
+    """Calculates Mori-Tanaka effective permittivity for ellipsoidal inclusions.
+    
+    Extension of Maxwell-Garnett for shaped inclusions defined by the 
+    depolarization factor L.
+    
+    L Values:
+      0.0   : Needles / Nanowires (aligned with E-field)
+      1/3   : Spheres (Mathematically equivalent to Maxwell-Garnett)
+      1.0   : Discs / Platelets (Perpendicular to E-field)
 
-    # Pre-generate inputs
+    Formula:
+      ε_eff = ε_h + [ f(ε_i - ε_h)ε_h ] / [ ε_h + (1-f)L(ε_i - ε_h) ]
+
+    Args:
+        n_i: Inclusion refractive index.
+        n_h: Host refractive index.
+        f: Volume fraction (scalar float).
+        L: Depolarization factor (0.0 to 1.0). Default is 1/3 (Spheres).
+
+    Returns:
+        Effective permittivity (epsilon) as a complex128 array.
+    """
+    eps_i = n_i * n_i
+    eps_h = n_h * n_h
+    
+    # Pre-calculate differences
+    eps_diff = eps_i - eps_h
+    
+    # Mori-Tanaka Explicit Form
+    # Numerator term: f * (e_i - e_h) * e_h
+    numerator = f * eps_diff * eps_h
+    
+    # Denominator term: e_h + (1-f) * L * (e_i - e_h)
+    denominator = eps_h + (1.0 - f) * L * eps_diff
+    
+    return eps_h + (numerator / denominator)
+
+
+@njit(cache=True, fastmath=True, parallel=True)
+def wiener_bounds(
+    n_i: npt.NDArray[np.complex128],
+    n_h: npt.NDArray[np.complex128],
+    f: float,
+) -> Tuple[npt.NDArray[np.complex128], npt.NDArray[np.complex128]]:
+    """Calculates the Wiener Upper and Lower bounds."""
+    eps_i = n_i * n_i
+    eps_h = n_h * n_h
+    inv_f = 1.0 - f
+
+    # Upper Bound (Arithmetic)
+    eps_upper = f * eps_i + inv_f * eps_h
+    
+    # Lower Bound (Harmonic)
+    numerator = eps_i * eps_h
+    denominator = f * eps_h + inv_f * eps_i
+    eps_lower = numerator / denominator
+
+    return eps_lower, eps_upper
+
+
+@njit(cache=True, fastmath=True)
+def hashin_shtrikman_bounds(
+    n_i: npt.NDArray[np.complex128],
+    n_h: npt.NDArray[np.complex128],
+    f: float,
+) -> Tuple[npt.NDArray[np.complex128], npt.NDArray[np.complex128]]:
+    """Calculates Hashin-Shtrikman (HS) bounds for isotropic composites."""
+    # Bound 1: Standard MG (Host is matrix)
+    bound_h_matrix = maxwell_garnett_eps(n_i, n_h, f)
+    
+    # Bound 2: Inverted MG (Inclusion is matrix). 
+    bound_i_matrix = maxwell_garnett_eps(n_h, n_i, 1.0 - f)
+    
+    return bound_h_matrix, bound_i_matrix
+
+
+@njit(cache=True, fastmath=True, parallel=True)
+def roughness_interface_eps(
+    n_bottom: npt.NDArray[np.complex128],
+    n_top: npt.NDArray[np.complex128],
+) -> npt.NDArray[np.complex128]:
+    """Calculates effective permittivity for a standard 50:50 roughness interface.
+
+    This function is optimized for thin-film models needing a general-purpose
+    interface layer. It uses the Looyenga model (Landau-Lifshitz-Looyenga) 
+    with f=0.5. Looyenga is fully analytical (fast) and symmetric (stable),
+    making it ideal for automated interface layer generation.
+    
+    Args:
+        n_bottom: Refractive index of the bottom layer (complex128 array).
+        n_top: Refractive index of the top layer (complex128 array).
+
+    Returns:
+        Effective permittivity (epsilon) as a complex128 array.
+    """
+    # Delegate to Looyenga (Analytical, Symmetric, Fast)
+    return looyenga_eps(n_bottom, n_top, 0.5)
+
+
+# --- Benchmarking Utilities ---
+
+def benchmark_models(n_samples: int = 50_000, n_iterations: int = 100) -> None:
+    """Runs performance benchmarks on all effective medium models."""
+    rng = np.random.default_rng(42)
+
+    # 1. Generate Input Data (Double Precision)
+    print(f"\nRunning {n_iterations} iterations of {n_samples}-sample benchmarks...")
+    print("Precision: complex128 / float64 (High Precision Mode)")
+    
     n_i = rng.uniform(1.5, 3.0, n_samples) + 1j * rng.uniform(0.0, 0.5, n_samples)
     n_h = rng.uniform(1.0, 2.0, n_samples) + 1j * rng.uniform(0.0, 0.3, n_samples)
-    f_vals = rng.uniform(0.05, 0.95, n_samples)
+    
+    # We use a single scalar fraction for benchmarking the new signature
+    f_val = 0.5
 
-    ## Warm up JIT
-    #lichtenecker_eps(n_i[0], n_h[0], f_vals[0])
-    #looyenga_eps(n_i[0], n_h[0], f_vals[0])
-    #maxwell_garnett_eps(n_i[0], n_h[0], f_vals[0])
-    #bruggeman_eps(n_i[0], n_h[0], f_vals[0])
+    # JIT Warm-up (forcing compilation for Scalar inputs)
+    _ = lichtenecker_eps(n_i, n_h, f_val)
+    _ = looyenga_eps(n_i, n_h, f_val)
+    _ = general_power_law_eps(n_i, n_h, f_val, 0.5)
+    _ = maxwell_garnett_eps(n_i, n_h, f_val)
+    _ = bruggeman_eps(n_i, n_h, f_val)
+    _ = mori_tanaka_eps(n_i, n_h, f_val, 0.333)
+    _ = roughness_interface_eps(n_i, n_h)
+    _ = wiener_bounds(n_i, n_h, f_val)
+    _ = hashin_shtrikman_bounds(n_i, n_h, f_val)
 
-    print(f"\nRunning {n_iterations} iterations of {n_samples}-sample benchmarks...\n")
+    timings = {}
 
-    total_time_l, total_time_looy, total_time_mg, total_time_brg = 0.0, 0.0, 0.0, 0.0
-    start_benchmark = time.time()
+    # 2. Execution Loop
+    start_global = time.perf_counter()
 
+    t0 = time.perf_counter()
     for _ in range(n_iterations):
-        t0 = time.time()
-        [lichtenecker_eps(n_i, n_h, f) for f in f_vals]
-        total_time_l += time.time() - t0
+        lichtenecker_eps(n_i, n_h, f_val)
+    timings["Lichtenecker"] = time.perf_counter() - t0
 
-        t0 = time.time()
-        [looyenga_eps(n_i, n_h, f) for f in f_vals]
-        total_time_looy += time.time() - t0
-
-        t0 = time.time()
-        [maxwell_garnett_eps(n_i, n_h, f) for f in f_vals]
-        total_time_mg += time.time() - t0
-
-        t0 = time.time()
-        [bruggeman_eps(n_i, n_h, f) for f in f_vals]
-        total_time_brg += time.time() - t0
-
-    end_benchmark = time.time()
-
-    print("Results (all times in seconds):")
-    print(f"{'Model':<20} {'Total Time':>15} {'Avg per Iteration':>20}")
-    print("-" * 55)
-    print(f"{'Lichtenecker':<20} {total_time_l:15.4f} {total_time_l/n_iterations:20.6f}")
-    print(f"{'Looyenga':<20} {total_time_looy:15.4f} {total_time_looy/n_iterations:20.6f}")
-    print(f"{'Maxwell Garnett':<20} {total_time_mg:15.4f} {total_time_mg/n_iterations:20.6f}")
-    print(f"{'Bruggeman':<20} {total_time_brg:15.4f} {total_time_brg/n_iterations:20.6f}")
-    print("-" * 55)
-    print(f"{'Total Benchmark Time':<20} {end_benchmark - start_benchmark:.2f} seconds")
-
-    # --- Material definitions as complex refractive indices ---
+    t0 = time.perf_counter()
+    for _ in range(n_iterations):
+        looyenga_eps(n_i, n_h, f_val)
+    timings["Looyenga"] = time.perf_counter() - t0
     
-    metal1 = np.ones(n_samples, dtype=np.complex128) * (0.2 + 4.0j)    # metal 1
-    metal2 = np.ones(n_samples, dtype=np.complex128) * (0.6 + 5.5j)    # metal 2
-    diel1 = np.ones(n_samples, dtype=np.complex128) * (1.5 + 0.0j)     # dielectric 1
-    diel2 = np.ones(n_samples, dtype=np.complex128) * (2.0 + 0.1j)     # dielectric 2
+    t0 = time.perf_counter()
+    for _ in range(n_iterations):
+        general_power_law_eps(n_i, n_h, f_val, 0.5)
+    timings["PowerLaw (Birchak)"] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    for _ in range(n_iterations):
+        maxwell_garnett_eps(n_i, n_h, f_val)
+    timings["Maxwell Garnett"] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    for _ in range(n_iterations):
+        bruggeman_eps(n_i, n_h, f_val)
+    timings["Bruggeman"] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    for _ in range(n_iterations):
+        mori_tanaka_eps(n_i, n_h, f_val, 0.333333)
+    timings["Mori-Tanaka"] = time.perf_counter() - t0
     
-    fractions = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+    t0 = time.perf_counter()
+    for _ in range(n_iterations):
+        roughness_interface_eps(n_i, n_h)
+    timings["Roughness (f=0.5)"] = time.perf_counter() - t0
     
+    t0 = time.perf_counter()
+    for _ in range(n_iterations):
+        wiener_bounds(n_i, n_h, f_val)
+    timings["Wiener Bounds"] = time.perf_counter() - t0
+    
+    t0 = time.perf_counter()
+    for _ in range(n_iterations):
+        hashin_shtrikman_bounds(n_i, n_h, f_val)
+    timings["Hashin-Shtrikman"] = time.perf_counter() - t0
+
+    end_global = time.perf_counter()
+
+    # 3. Report Results
+    print(f"{'Model':<20} {'Total Time (s)':>15} {'Avg Time/Call (s)':>20}")
+    print("-" * 57)
+    for name, t_total in timings.items():
+        print(f"{name:<20} {t_total:15.6f} {t_total/n_iterations:20.8f}")
+    print("-" * 57)
+    print(f"{'Benchmark Overhead':<20} {end_global - start_global:.6f} seconds")
+
+
+def run_verification() -> None:
+    """Runs a verification table for specific material pairs."""
+    metal1 = np.array([0.2 + 4.0j], dtype=np.complex128)
+    diel1  = np.array([1.5 + 0.0j], dtype=np.complex128)
+    diel2  = np.array([2.0 + 0.1j], dtype=np.complex128)
+    metal2 = np.array([0.6 + 5.5j], dtype=np.complex128)
+
+    fractions = [0.1, 0.3, 0.5, 0.7, 0.9]
+
     test_cases = [
         ("Metal–Dielectric", metal1, diel1),
         ("Dielectric-Metal", diel2, metal2),
@@ -269,27 +458,38 @@ def benchmark_models(n_samples=500, n_iterations=100):
         ("Dielectric2–Dielectric1", diel2, diel1),
         ("Metal–Metal", metal1, metal2),
     ]
-    
-    def print_complex_n(eps):
-        """Return a nicely formatted string for n = sqrt(ε)."""
-        # eps is an array – we only need the first element (all entries are identical)
-        if np.isnan(eps[0].real) or np.isnan(eps[0].imag):
-            return "NaN"
-        n = np.sqrt(eps[0])
-        return f"{n.real:.3f} + {n.imag:.3f}j"
-    
-    # Run tests
-    for label, n1, n2 in test_cases:
-        print(f"\n--- {label} ---")
-        print(f"{'f (n1)':>7} | {'Lichtenecker (n)':>20} | {'Looyenga (n)':>20} | {'Maxwell Garnett (n)':>22} | {'Bruggeman (n)':>15}")
-        print("-" * 95)
-        for f in fractions:
-            eps_l = lichtenecker_eps(n1, n2, f)
-            eps_lo = looyenga_eps(n1, n2, f)
-            eps_mg = maxwell_garnett_eps(n1, n2, f)
-            eps_b = bruggeman_eps(n1, n2, f)
-            print(f"{f:7.2f} | {print_complex_n(eps_l):>20} | {print_complex_n(eps_lo):>20} | {print_complex_n(eps_mg):>22} | {print_complex_n(eps_b):>15}")
 
-# Run the benchmark
+    def fmt_n(eps_arr: npt.NDArray[np.complex128]) -> str:
+        """Format sqrt(epsilon) -> n."""
+        val = np.sqrt(eps_arr[0])
+        return f"{val.real:.3f}+{val.imag:.3f}j"
+
+    for label, n_a, n_b in test_cases:
+        print(f"\n--- {label} ---")
+        # Header covering all implemented models
+        header = (f"{'f':>5} | {'Licht.':>18} | {'Looy.':>18} | {'Birch.':>18} | {'Brug.':>18} | "
+                  f"{'HS1 (MG)':>18} | {'MT (Sph)':>18} | {'HS2 (Inv)':>18} | "
+                  f"{'Wien(Lo)':>18} | {'Wien(Hi)':>18}")
+        print(header)
+        print("-" * 193)  # Expanded width to match new column count
+
+        for f_val in fractions:
+            # All functions now accept scalar f_val directly
+            
+            e_l = lichtenecker_eps(n_a, n_b, f_val)
+            e_loo = looyenga_eps(n_a, n_b, f_val)
+            e_birchak = general_power_law_eps(n_a, n_b, f_val, 0.5)
+            e_bg = bruggeman_eps(n_a, n_b, f_val)
+            e_hs1, e_hs2 = hashin_shtrikman_bounds(n_a, n_b, f_val)
+            e_mt = mori_tanaka_eps(n_a, n_b, f_val, 1.0/3.0)
+            e_w_low, e_w_high = wiener_bounds(n_a, n_b, f_val)
+
+            # Print all columns
+            print(f"{f_val:5.1f} | {fmt_n(e_l):>18} | {fmt_n(e_loo):>18} | {fmt_n(e_birchak):>18} | "
+                  f"{fmt_n(e_bg):>18} | {fmt_n(e_hs1):>18} | {fmt_n(e_mt):>18} | {fmt_n(e_hs2):>18} | "
+                  f"{fmt_n(e_w_low):>18} | {fmt_n(e_w_high):>18}")
+
+
 if __name__ == "__main__":
-    benchmark_models(n_samples=500, n_iterations=10)
+    benchmark_models(n_samples=50_000, n_iterations=100)
+    run_verification()
