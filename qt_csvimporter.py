@@ -23,11 +23,12 @@ from typing import Dict, Union
 
 from qt_icons import ICON_DICT
 from qt_collapsible import CollapsibleSectionMixin
+from qt_polarsplot import PolarsPlotWidget
 from csvdata import CSVData
 
 CONFIG_FILE = str(Path.cwd() / "config" / "csv_importer_config.json")
 
-class PolarsModel(QAbstractTableModel):
+class CSVPolarsModel(QAbstractTableModel):
     """QAbstractTableModel that wraps a :class:`polars.DataFrame`.
 
     The model exposes the DataFrame’s rows and columns to Qt view widgets such as
@@ -300,7 +301,7 @@ class CSVImporterWindow(QMainWindow, CollapsibleSectionMixin):
         main_layout.addWidget(dataview_group, 3)
 
         # ===== Model =====
-        self.model = PolarsModel()
+        self.model = CSVPolarsModel()
         self.table_view.setModel(self.model)
 
         # ===== Style =====
