@@ -412,7 +412,7 @@ if __name__ == "__main__":
             show_headers=True,
             show_row_labels=False,  
             alternating_rows=True,
-            alternate_color="#f0f0f0"
+            alternate_color="darker" #keywords: darker or lighter, hex colors e.g. #f0f0f0 or colornames e.g. darkgrey
         )
         
         table.setModel(model)
@@ -445,4 +445,5 @@ if __name__ == "__main__":
         
         sys.exit(app.exec())
     
+
     main()
