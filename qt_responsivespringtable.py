@@ -20,11 +20,12 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QAbstractItemView,
     QLabel,
-    QFrame
+    QFrame,
+    QTableWidget
 )
 
 # ==========================================
-# 1. The High-Performance Model (UNCHANGED)
+# 1. The High-Performance Model
 # ==========================================
 class NumpyTableModel(QAbstractTableModel):
     """
@@ -209,7 +210,7 @@ class NumpyTableModel(QAbstractTableModel):
         self.endResetModel()
 
 # ==========================================
-# 2. The Configurable Responsive View (FIXED)
+# 2. The Configurable Responsive View
 # ==========================================
 class ResponsiveSpringTableView(QTableView):
     """
@@ -538,6 +539,225 @@ class ResponsiveSpringTableView(QTableView):
         The last column fills the remaining viewport width. If the total width
         of other columns exceeds the viewport, the spring column collapses to 0.
         """
+        header = self.horizontalHeader()
+        count = header.count()
+        if count == 0: return
+        last_visual_index = count - 1
+        last_logical_index = header.logicalIndex(last_visual_index)
+        used_width = 0
+        for i in range(count):
+            if i != last_logical_index:
+                used_width += self.columnWidth(i)
+        viewport_width = self.viewport().width()
+        new_spring_width = max(0, viewport_width - used_width)
+        header.blockSignals(True)
+        self.setColumnWidth(last_logical_index, new_spring_width)
+        header.blockSignals(False)
+
+# ==========================================
+# 3. The Configurable Responsive Table Widget
+# ==========================================
+class ResponsiveSpringTableWidget(QTableWidget):
+    """
+    Adapted from ResponsiveSpringTableView to inherit QTableWidget.
+    Supports proportional column resizing, persistent layout states, 
+    and a 'spring' column.
+    """
+    def __init__(self, 
+                 parent: Optional[QWidget] = None,
+                 enable_sorting: bool = False, 
+                 enable_row_drag_drop: bool = False,
+                 show_headers: bool = True,
+                 show_row_labels: bool = True,
+                 alternating_rows: bool = True,
+                 alternate_color: Union[str, QColor, Literal["lighter", "darker"], None] = "lighter",
+                 rows_resizable: bool = False) -> None:
+        
+        super().__init__(parent)
+        
+        self._min_widths: dict[int, int] = {}
+        self._max_widths: dict[int, int] = {}
+        self._draggable_column_indices: set[int] = set()
+
+        self._saved_state: Optional[QByteArray] = None
+        self._default_state: Optional[QByteArray] = None
+        self._is_initialized: bool = False
+
+        self.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection) # Kept Extended for TableControlWidget logic
+        self.setAlternatingRowColors(alternating_rows)
+        
+        if alternating_rows and alternate_color:
+            self.set_alternating_color(alternate_color)
+        
+        self.horizontalHeader().setVisible(show_headers)
+        self.verticalHeader().setVisible(show_row_labels)
+        self.set_rows_resizable(rows_resizable)
+
+        self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.horizontalHeader().setStretchLastSection(False)
+        self.horizontalHeader().setSectionsMovable(True) 
+        self.horizontalHeader().sectionResized.connect(self.on_column_resized)
+        self.horizontalHeader().sectionMoved.connect(self.on_column_moved)
+        
+        self.horizontalHeader().setSortIndicator(0, Qt.SortOrder.AscendingOrder)
+
+        if enable_row_drag_drop:
+            self.switch_to_drag()
+        else:
+            self.switch_to_sort()
+            if not enable_sorting:
+                self.setSortingEnabled(False)
+
+    # --- INTEGRATED CONTROL FUNCTIONS ---
+
+    def capture_default_state(self) -> None:
+        self._default_state = self.horizontalHeader().saveState()
+
+    def save_layout(self) -> None:
+        self._saved_state = self.horizontalHeader().saveState()
+
+    def restore_layout(self) -> None:
+        if self._saved_state:
+            self.horizontalHeader().restoreState(self._saved_state)
+            self.update_spring_column()
+
+    def switch_to_sort(self) -> None:
+        self.set_row_drag_drop(False)
+        if self.horizontalHeader().sortIndicatorSection() == -1:
+            self.horizontalHeader().setSortIndicator(0, Qt.SortOrder.AscendingOrder)
+        self.setSortingEnabled(True)
+        self.horizontalHeader().setSectionsClickable(True)
+
+    def switch_to_drag(self) -> None:
+        self.set_row_drag_drop(True)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not self._is_initialized:
+            self.capture_default_state()
+            if self._saved_state is None:
+                self.save_layout()
+            self._is_initialized = True
+        self.update_spring_column()
+
+    # --- Internal Helpers ---
+
+    def set_row_drag_drop(self, enable: bool) -> None:
+        self.setDragEnabled(enable)
+        self.setAcceptDrops(enable)
+        if enable:
+            self.setSortingEnabled(False)
+            self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+            self.setDragDropOverwriteMode(False)
+            self.setDropIndicatorShown(True)
+        else:
+            self.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
+
+    def set_rows_resizable(self, enable: bool) -> None:
+        mode = QHeaderView.ResizeMode.Interactive if enable else QHeaderView.ResizeMode.Fixed
+        self.verticalHeader().setSectionResizeMode(mode)
+
+    def configure_columns(self, config: list[dict[str, Any]]) -> None:
+        labels = []
+        self._draggable_column_indices.clear()
+        
+        # Adaptation: QTableWidget handles headers differently than custom models
+        current_count = self.columnCount()
+        
+        for i in range(current_count):
+            if i < len(config):
+                labels.append(config[i].get("label", str(i)))
+                if config[i].get("draggable", True):
+                    self._draggable_column_indices.add(i)
+            else:
+                labels.append(str(i))
+                self._draggable_column_indices.add(i)
+        
+        self.setHorizontalHeaderLabels(labels)
+
+        self._min_widths.clear()
+        self._max_widths.clear()
+        for i, settings in enumerate(config):
+            if "min_width" in settings: self._min_widths[i] = settings["min_width"]
+            if "max_width" in settings: self._max_widths[i] = settings["max_width"]
+        
+        if self.isVisible():
+            self.resizeEvent(QResizeEvent(self.size(), self.size()))
+
+    def set_alternating_color(self, color_spec: Union[str, QColor, Literal["lighter", "darker"]]) -> None:
+        if not self.alternatingRowColors(): return
+        palette = self.palette()
+        base_color = palette.color(QPalette.ColorRole.Base)
+        target_color = None
+        if color_spec == "lighter": target_color = base_color.lighter(105)
+        elif color_spec == "darker": target_color = base_color.darker(105)
+        elif isinstance(color_spec, (str, QColor)): target_color = QColor(color_spec)
+        
+        if target_color and target_color.isValid():
+            palette.setColor(QPalette.ColorRole.AlternateBase, target_color)
+            self.setPalette(palette)
+
+    def on_column_moved(self, logicalIndex: int, oldVisualIndex: int, newVisualIndex: int) -> None:
+        header = self.horizontalHeader()
+        if logicalIndex not in self._draggable_column_indices:
+            header.blockSignals(True) 
+            header.moveSection(newVisualIndex, oldVisualIndex)
+            header.blockSignals(False)
+            return
+        self.update_spring_column()
+
+    def on_column_resized(self, index: int, old_size: int, new_size: int) -> None:
+        header = self.horizontalHeader()
+        last_visual_index = header.count() - 1
+        last_logical_index = header.logicalIndex(last_visual_index)
+        if index == last_logical_index: return
+        
+        min_w = self._min_widths.get(index, 30)
+        max_w = self._max_widths.get(index, 999999)
+        corrected = max(min_w, min(new_size, max_w))
+        
+        if corrected != new_size:
+            header.blockSignals(True)
+            self.setColumnWidth(index, corrected)
+            header.blockSignals(False)
+        self.update_spring_column()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        old_width = event.oldSize().width()
+        new_width = event.size().width()
+        super().resizeEvent(event)
+        if new_width <= 0: return
+        if old_width <= 0:
+            self.update_spring_column()
+            return
+
+        header = self.horizontalHeader()
+        count = header.count()
+        ratio = new_width / old_width
+        rounding_error = 0.0
+        
+        for visual_i in range(count - 1):
+            logical_i = header.logicalIndex(visual_i)
+            current_width = self.columnWidth(logical_i)
+            target_width = (current_width * ratio) + rounding_error
+            new_width_int = int(round(target_width))
+            
+            min_w = self._min_widths.get(logical_i, 30)
+            max_w = self._max_widths.get(logical_i, 999999)
+            
+            if new_width_int < min_w: new_width_int = min_w
+            elif new_width_int > max_w: new_width_int = max_w
+            
+            rounding_error = target_width - new_width_int
+            if abs(rounding_error) > 10: rounding_error = 0.0
+            
+            header.blockSignals(True)
+            self.setColumnWidth(logical_i, new_width_int)
+            header.blockSignals(False)
+        self.update_spring_column()
+
+    def update_spring_column(self) -> None:
         header = self.horizontalHeader()
         count = header.count()
         if count == 0: return
