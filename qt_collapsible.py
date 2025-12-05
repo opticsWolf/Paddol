@@ -5,21 +5,39 @@ Copyright (c) 2025 opticsWolf
 
 SPDX-License-Identifier: LGPL-3.0-or-later
 """
-from PyQt5.QtWidgets import QApplication, QWidget, QLayout, QSplitter, QSpacerItem, QLayoutItem
-from PyQt5.QtCore import QMargins, QPropertyAnimation, QEasingCurve, QObject
+from PySide6.QtWidgets import QApplication, QWidget, QLayout, QSplitter, QSpacerItem, QLayoutItem
+from PySide6.QtCore import QMargins, QPropertyAnimation, QEasingCurve
 
-class CollapsibleSectionMixin(QObject):
-    """Adds collapsible-section behavior to any QWidget with a layout."""
+class CollapsibleSectionMixin():
+    """Mixin that provides collapsible section functionality to Qt widgets.
 
-    def collect_qt_children(self, root):
-        """Recursively collect all descendant widgets, layouts, and layout items.
-    
+    This class is designed to be mixed into a class that eventually inherits from
+    QWidget (or QMainWindow). It provides logic to recursively traverse a layout
+    tree and animate the visibility of widgets and spacers.
+
+    Note:
+        This is a pure Python class and does not inherit from QObject or QWidget
+        to avoid "Diamond Inheritance" / Meta-Object conflicts in PySide6.
+    """
+
+    def collect_qt_children(
+        self, 
+        root: QWidget | QLayout | QLayoutItem | None
+    ) -> list[QWidget | QLayout | QLayoutItem]:
+        """Recursively collects all descendant widgets, layouts, and layout items.
+
+        Traverses the Qt object tree starting from the given root node to identify
+        all elements that need to be hidden or shown during a collapse animation.
+        It handles nested layouts, splitters, and individual layout items.
+
         Args:
-            root (QWidget | QLayout | QLayoutItem): The starting element to traverse.
-    
+            root (QWidget | QLayout | QLayoutItem | None): The starting element 
+                to traverse. If None, the method returns immediately.
+
         Returns:
-            list: All descendant elements including widgets, layouts, and items.
-                  Excludes None values and the root itself if not a widget/container.
+            list[QWidget | QLayout | QLayoutItem]: A flat list of all descendant 
+                elements found in the subtree. The list excludes the `root` itself 
+                (if it was passed as the starting point) and any None values.
         """
         descendants = []
     
@@ -101,12 +119,15 @@ class CollapsibleSectionMixin(QObject):
         # Cache original layout geometry
         original_margins = layout.contentsMargins() if layout else QMargins(0, 0, 0, 0)
         original_spacing = layout.spacing() if layout else -1
-        original_height = container.sizeHint().height() - 10
+        # Calculate a safe height or use sizeHint
+        sh = container.sizeHint()
+        original_height = sh.height() - int(sh.height() / 10)
     
         # Configure animation
+        # Note: PySide6 QPropertyAnimation usually expects bytes for property name
         anim = QPropertyAnimation(container, b"minimumHeight")
         anim.setDuration(duration)
-        anim.setEasingCurve(QEasingCurve.InOutCubic)
+        anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
     
         # Ensure finished signal is not stacked multiple times
         def clear_hidden_widgets():
@@ -123,6 +144,7 @@ class CollapsibleSectionMixin(QObject):
             # Collapse spacers by adjusting their sizeHint/size
             for s in spacers:
                 if checked:
+                    # Retrieve cached hint if possible or current hint
                     s.changeSize(s.sizeHint().width(), s.sizeHint().height())
                 else:
                     s.changeSize(0, 0)

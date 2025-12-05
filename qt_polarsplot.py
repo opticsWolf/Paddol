@@ -12,16 +12,17 @@ import polars as pl
 import numpy as np
 import matplotlib.pyplot as plt
 
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+# Switch to backend_qtagg for PySide6 compatibility
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 
 
-from PyQt5.QtCore import QItemSelectionModel, Qt, QItemSelection
+from PySide6.QtCore import QItemSelectionModel, Qt, QItemSelection
 
-from PyQt5.QtGui import (QStandardItemModel, QStandardItem, QIcon, 
+from PySide6.QtGui import (QStandardItemModel, QStandardItem, QIcon, 
                          QPixmap, QColor, QPainter, QPen
                          )
 
-from PyQt5.QtWidgets import (QWidget, QListView, QVBoxLayout,
+from PySide6.QtWidgets import (QWidget, QListView, QVBoxLayout,
                              QApplication, QAbstractItemView, 
                              QSplitter, QGroupBox, QSizePolicy, 
                              )
@@ -76,7 +77,7 @@ class PolarsPlotWidget(QWidget):
     def _setup_ui(self) -> None:
         """Set up the main user interface layout."""
         # Create horizontal splitter for resizable panes
-        main_splitter = QSplitter(Qt.Horizontal)
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
         main_splitter.setOpaqueResize(True)  # Optimize for resizing performance
     
         # Left pane: Column selection group box with outer vbox layout
@@ -85,7 +86,7 @@ class PolarsPlotWidget(QWidget):
         col_layout.setContentsMargins(8, 8, 8, 8)  # Margins: left, top, right, bottom
     
         self.col_list_view = QListView()
-        self.col_list_view.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.col_list_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.col_model = QStandardItemModel()
         self.col_list_view.setModel(self.col_model)
         self.col_list_view.selectionModel().selectionChanged.connect(
@@ -94,7 +95,7 @@ class PolarsPlotWidget(QWidget):
         col_layout.addWidget(self.col_list_view)
     
         # Set size policy for the list view to take available space
-        self.col_list_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.col_list_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
     
         # Wrap the group box in an outer vbox layout for more control
         left_wrapper = QWidget()
@@ -103,7 +104,7 @@ class PolarsPlotWidget(QWidget):
         left_layout.addWidget(col_group)
     
         # Set size policy for the wrapper to take available space but not more than needed
-        left_wrapper.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Expanding)
+        left_wrapper.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Expanding)
         left_wrapper.setMinimumWidth(150)
     
         main_splitter.addWidget(left_wrapper)
@@ -128,7 +129,7 @@ class PolarsPlotWidget(QWidget):
         right_layout.addWidget(plot_group)
     
         # Set size policy for the wrapper to take available space
-        right_wrapper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        right_wrapper.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
     
         main_splitter.addWidget(right_wrapper)
     
@@ -290,13 +291,13 @@ class PolarsPlotWidget(QWidget):
             '''
             #Round icon
             pix = QPixmap(icon_size, icon_size)
-            pix.fill(Qt.transparent)
+            pix.fill(Qt.GlobalColor.transparent)
     
             pix = QPixmap(icon_size, icon_size)
-            pix.fill(Qt.transparent)
+            pix.fill(Qt.GlobalColor.transparent)
             
             p = QPainter(pix)
-            p.setRenderHint(QPainter.Antialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             p.setBrush(qcolor)
             p.setPen(Qt.NoPen)
             p.drawEllipse(0, 0, icon_size, icon_size)
@@ -305,13 +306,13 @@ class PolarsPlotWidget(QWidget):
             #Line Icon
             icon_w, icon_h = 18, 12
             pix = QPixmap(icon_w, icon_h)
-            pix.fill(Qt.transparent)
+            pix.fill(Qt.GlobalColor.transparent)
             
             p = QPainter(pix)
-            p.setRenderHint(QPainter.Antialiasing, True)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             
             pen = QPen(qcolor, 3)
-            pen.setCapStyle(Qt.RoundCap)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             p.setPen(pen)
             
             y = icon_h // 2
@@ -331,7 +332,7 @@ class PolarsPlotWidget(QWidget):
         last_idx = self.col_model.index(len(cols) - 1, 0)
         selection = QItemSelection(first_idx, last_idx)
     
-        sel_model.select(selection, QItemSelectionModel.Select | QItemSelectionModel.Rows)
+        sel_model.select(selection, QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows)
     
     # ------------------------------------------------------------------
     def set_new_colormap(self, cmap):

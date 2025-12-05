@@ -20,11 +20,12 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import RectangleSelector
 
 from matplotlib.backend_bases import MouseButton
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+# Use the generic qtagg backend which supports PySide6
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 
-from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtGui import QIcon, QPixmap
-from PyQt5.QtWidgets import (
+from PySide6.QtCore import Qt, QSize
+from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtWidgets import (
     QWidget,
     QHBoxLayout,
     QVBoxLayout,
@@ -130,7 +131,7 @@ class CSVPlottoolbar(QWidget):
 
         # Spacer 1
         spacer1 = QWidget()
-        spacer1.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        spacer1.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         layout.addWidget(spacer1)
 
         # XY label
@@ -140,7 +141,7 @@ class CSVPlottoolbar(QWidget):
 
         # Spacer 2
         spacer2 = QWidget()
-        spacer2.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        spacer2.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         layout.addWidget(spacer2)
 
         # Colormap selector
@@ -223,7 +224,7 @@ class CSVPlottoolbar(QWidget):
         c.leaveEvent = self._on_leave
 
         # Context menu
-        c.setContextMenuPolicy(Qt.CustomContextMenu)
+        c.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         c.customContextMenuRequested.connect(self._show_context_menu)
 
     # ------------------------------------------------------------------
@@ -319,10 +320,10 @@ class CSVPlottoolbar(QWidget):
             return
     
         qt_event = getattr(event, "guiEvent", None)
-        modifiers = qt_event.modifiers() if qt_event else Qt.NoModifier
+        modifiers = qt_event.modifiers() if qt_event else Qt.KeyboardModifier.NoModifier
     
         # Ctrl + double-left → zoom out
-        if event.dblclick and event.button == MouseButton.LEFT and (modifiers & Qt.ControlModifier):
+        if event.dblclick and event.button == MouseButton.LEFT and (modifiers & Qt.KeyboardModifier.ControlModifier):
             self.zoom_out()
             return
     
@@ -601,4 +602,4 @@ class CSVPlottoolbar(QWidget):
         menu.addAction(QIcon(ICON_DICT["Save"]), "Save plot", self.save_plot)
 
         global_pos = self.canvas.mapToGlobal(pos)
-        menu.exec_(global_pos)
+        menu.exec(global_pos)
