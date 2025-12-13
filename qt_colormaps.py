@@ -1,3 +1,10 @@
+# -*- coding: utf-8 -*-
+"""
+PADDOL: Python Advanced Design & Dispersion Optimization Lab
+Copyright (c) 2025 opticsWolf
+
+SPDX-License-Identifier: LGPL-3.0-or-later
+"""
 import sys
 import json
 from pathlib import Path
@@ -10,7 +17,7 @@ from PySide6.QtWidgets import (
     QPushButton, QHBoxLayout, QGroupBox, QScrollArea,
     QColorDialog, QRadioButton, QButtonGroup,
     QSizePolicy, QComboBox, QLineEdit, QMessageBox,
-    QDialog, QFrame, QToolButton, 
+    QDialog, QFrame, QToolButton, QDialogButtonBox
 )
 from PySide6.QtGui import (
     QGuiApplication, QImage, QPixmap, QColor, QPainterPath,
@@ -20,9 +27,9 @@ from PySide6.QtCore import Qt, Signal, QPoint, QRect, QTimer, QSize, QRectF
 
 # Assumed external modules (Mocked for context if missing, but using imports as requested)
 from qt_icons import ICON_DICT
-from qt_colorwheel_V3 import ColorGeneratorDialog
-from colormapsengine import COLORMAP_PRESETS, OklabEngine, ColorMapsPresetManager, JSON_FILENAME
+from qt_colorwheel import ColorGeneratorDialog
 
+from colorengine import OklabEngine, ColorMapsPresetManager
 
 def numpy_to_qpixmap(data: np.ndarray, height: int = 100) -> QPixmap:
     """
@@ -206,7 +213,10 @@ class RoundedGradientWidget(QWidget):
         painter.drawPixmap(self.rect(), self._pixmap)
 
 
-class ColormapApp(QWidget):
+class ColormapGenerator(QWidget):
+    
+    # 1. New Signal
+    validityChanged = Signal(bool)
     
     GROUPBOX_STYLE = """
         QGroupBox {
@@ -281,27 +291,57 @@ class ColormapApp(QWidget):
         }
     """
     
-    def __init__(self) -> None:
+    def __init__(self, current_cmap_name: str = "Viridis") -> None:
         super().__init__()
+
+        # ------------------------------------------------------------------
+        # Window configuration
+        # ------------------------------------------------------------------
         self.setWindowTitle("Colormap Tool")
-        self.resize(1024, 580)
-        self.setWindowIcon(QIcon(ICON_DICT["colormap"]))
-        self.json_filename = JSON_FILENAME
-    
-        self.preset_manager = ColorMapsPresetManager(filename=self.json_filename)
-        # Use manager's internal storage dictionary
-        # Note: self.custom_presets now references the manager's dict
-        self.custom_presets = self.load_custom_presets_from_file()
-        print (self.custom_presets)   
-        self.colormap_presets: Dict = COLORMAP_PRESETS
+        self.resize(1024, 640)
+        self.setWindowIcon(QIcon(ICON_DICT.get("colormap", "")))
+
+        # ------------------------------------------------------------------
+        # State tracking
+        # ------------------------------------------------------------------
+        self._clean_state: dict = {"colors": [], "mode": "strict"}
+
+        # Engine that does the colour math
+        self.cmap_engine = OklabEngine()
+
+        # ------------------------------------------------------------------
+        # Preset handling
+        # ------------------------------------------------------------------
+        self.cmap_manager = ColorMapsPresetManager()
+        load_error = self.cmap_manager.load_custom_presets_from_file()
+        if load_error:
+            print(f"Warning: Could not load custom presets: {load_error}")
+
+        # Expose the manager’s data for convenience
+        self.custom_presets = self.cmap_manager.custom_presets
+
+        # Combine default and custom presets
+        self.colormap_presets = self.cmap_manager.default_presets.copy()
+        self.all_presets = self.colormap_presets.copy()
+        self.all_presets.update(self.custom_presets)
+
+        # ------------------------------------------------------------------
+        # UI components
+        # ------------------------------------------------------------------
         self.color_rows: List[ColorRow] = []
-        
         self.color_rule = None
-        
+
         self._setup_ui()
-        
-        self.combo_presets.setCurrentText("Viridis")
-        QTimer.singleShot(10, lambda: self.load_selected_preset("Viridis"))
+
+        # ------------------------------------------------------------------
+        # Preset selection
+        # ------------------------------------------------------------------
+        if current_cmap_name not in self.all_presets:
+            current_cmap_name = "Viridis"  # Fallback to default
+        self._current_preset_name = current_cmap_name
+
+        self.combo_presets.setCurrentText(self._current_preset_name)
+        QTimer.singleShot(10, lambda: self.load_selected_preset(current_cmap_name))
 
     def _setup_ui(self) -> None:
         main_h_layout = QHBoxLayout()
@@ -338,9 +378,9 @@ class ColormapApp(QWidget):
                 border-radius: 8px;
             }
             """
-        )
-        
-        self.btn_save_preset = self._make_btn("Save", "Saves custome preset to template", ICON_DICT.get("save2"))
+        )     
+
+        self.btn_save_preset = self._make_btn(" Save", "Saves custome preset to template", ICON_DICT.get("save2"))
         self.btn_save_preset.clicked.connect(self.save_current_as_preset)
         
         self.btn_del_preset = self._make_btn(" Delete", "Removes custome preset", ICON_DICT.get("delete"))
@@ -475,14 +515,6 @@ class ColormapApp(QWidget):
         # We use padding-left to push the icon/text away from the left edge.
         # The default layout engine then naturally centers the text relative to the icon.
         # Adjust '8px' to control the final spacing.
-        btn.setStyleSheet(
-            """
-            QPushButton {
-                padding: 8px 10px 8px 10px; /* Top, Right, Bottom, Left padding */
-                text-align: left;         /* Optional: Align text to the left */
-            }
-            """
-        )
         
         btn.setStyleSheet(self.BUTTON_STYLE)
         
@@ -500,7 +532,7 @@ class ColormapApp(QWidget):
         is aliased to the manager's internal storage).
         """
         # The manager handles all file I/O and dictionary updating.
-        return self.preset_manager.load_custom_presets_from_file()
+        return self.cmap_manager.load_custom_presets_from_file()
 
     def save_custom_presets_to_file(self) -> None:
         """
@@ -511,10 +543,10 @@ class ColormapApp(QWidget):
         """
         # 1. Update manager's internal state (already aliased, but good practice 
         #    if you ever copy the dict instead of aliasing)
-        self.preset_manager.custom_presets = self.custom_presets
+        self.cmap_manager.custom_presets = self.custom_presets
         
         # 2. Delegate save and check the return value
-        error = self.preset_manager.save_custom_presets_to_file()
+        error = self.cmap_manager.save_custom_presets_to_file()
         
         # 3. Handle the returned exception at the UI level
         if error is not None:
@@ -543,6 +575,7 @@ class ColormapApp(QWidget):
         if not preset_name or preset_name.startswith("---"):
             return
         
+        # 1. Retrieve Data
         if preset_name in self.colormap_presets:
             data = self.colormap_presets[preset_name]
             self.btn_del_preset.setEnabled(False)
@@ -552,31 +585,40 @@ class ColormapApp(QWidget):
         else:
             return
 
-        # Optimization: Freeze painting of the list widget during batch updates
+        # 2. Update Internal Tracking
+        self._current_preset_name = preset_name
+        # Deep copy the lists to ensure reference safety
+        self._clean_state = {
+            "colors": list(data.get("colors", [])),
+            "mode": data.get("mode", "strict")
+        }
+
+        # 3. UI Updates (Standard logic)
         self.color_list_widget.setUpdatesEnabled(False)
-        self.blockSignals(True)
+        self.blockSignals(True) # Block signals to prevent dirty check during build
         
-        mode = data.get("mode", "strict")
+        mode = self._clean_state["mode"]
         if mode == "luma": self.radio_luma.setChecked(True)
         elif mode == "balanced": self.radio_balanced.setChecked(True)
         else: self.radio_strict.setChecked(True)
 
-        # Clear existing rows efficiently
         while self.color_rows:
             row = self.color_rows.pop()
             self.color_list_layout.removeWidget(row)
             row.deleteLater()
             
-        # Add new rows
-        for hex_c in data.get("colors", []):
+        for hex_c in self._clean_state["colors"]:
             self.add_color_point_internal(QColor(hex_c))
             
-        self.blockSignals(False)
+        self.blockSignals(False) # Unblock
         self.update_ui_state()
-        self.color_list_widget.setUpdatesEnabled(True) # Resume painting
+        self.color_list_widget.setUpdatesEnabled(True)
         
-        # Defer generation slightly to allow layout to settle
+        # 4. Generate and Explicitly mark as valid
         QTimer.singleShot(10, self.generate_colormap)
+        # Force a validity emit because generate_colormap might not trigger it 
+        # correctly if signals were blocked during setup
+        self.validityChanged.emit(True) 
 
     def save_current_as_preset(self) -> None:
         name = self.input_preset_name.text().strip()
@@ -589,11 +631,20 @@ class ColormapApp(QWidget):
         elif self.radio_balanced.isChecked(): mode = "balanced"
         else: mode = "strict"
         
+        # Save to dict
         self.custom_presets[name] = {"colors": colors, "mode": mode}
         self.save_custom_presets_to_file()
+        
+        # Update Tracking
+        self._current_preset_name = name
+        self._clean_state = {"colors": list(colors), "mode": mode}
+        
         self.refresh_preset_list()
         self.combo_presets.setCurrentText(name)
         self.input_preset_name.clear()
+        
+        # Explicitly validate
+        self.validityChanged.emit(True)
 
     def delete_selected_preset(self) -> None:
         name = self.combo_presets.currentText()
@@ -782,7 +833,7 @@ class ColormapApp(QWidget):
         n_steps = 1024 
         
         try:
-            rgb_array = OklabEngine.generate_gradient(
+            rgb_array = self.cmap_engine.generate_gradient(
                 colors=colors,
                 mode=mode,
                 n_steps=n_steps
@@ -805,10 +856,193 @@ class ColormapApp(QWidget):
             else:
                 self.image_label.set_gradient(None)
 
+    def get_cmaps(self) -> dict:
+        """
+        Retrieves the active preset name, a sorted list of all names, and the combined data.
+
+        Returns:
+            dict: A collection containing:
+                - 'active': (str) The currently selected preset name.
+                - 'names': (list[str]) All preset names sorted alphabetically.
+                - 'presets': (dict) The combined dictionary of default and custom data.
+        """
+        # 1. Safely merge dictionaries into a new object using unpacking
+        # This prevents modifying self.colormap_presets permanently
+        #Default presets overwrite custom presets with identical names
+        all_presets = {**self.custom_presets, **self.colormap_presets}
+        cmap_dict = {}
+        
+        # 2. Generate the sorted list of names for UI consistency
+        all_preset_names = sorted([
+            k for k in self.custom_presets.keys() 
+            if k not in self.colormap_presets.keys()
+        ])
+        
+        cmap_dict = self.cmap_manager.return_cmaps(all_presets)
+    
+        # 3. Return as a structured dictionary for cleaner access in the Dialog
+        return {
+            "active": self._current_preset_name,
+            "names": all_preset_names,
+            "cmaps": cmap_dict
+        }
+
+class ColorMapDialog(QDialog):
+    """A dialog wrapper for the ColormapGenerator widget."""
+
+    BUTTON_STYLE = """
+        QDialogButtonBox {
+            dialogbuttonbox-buttons-have-icons: 0;
+        }
+        QPushButton {
+            background-color: #333;
+            color: white;
+            border: 1px solid #444;
+            border-radius: 8px;
+            padding: 8px 15px;
+            font-weight: bold;
+            font-size: 12px;
+            min-width: 80px;
+        }
+        QPushButton:hover {
+            background-color: #444; 
+            border: 1px solid #555;
+        }
+        QPushButton:pressed {
+            background-color: #222; 
+            border: 1px solid #3daee9; 
+            color: #3daee9;
+        }
+    """
+
+    WINDOW_WIDTH = 1040 # Slightly wider to accommodate the tool
+    WINDOW_HEIGHT = 650
+
+    def __init__(self, parent=None, current_cmap_name='Viridis', icon_path=None):
+        super().__init__(parent)
+        self.setWindowTitle("Colormap Generator")
+        self.resize(self.WINDOW_WIDTH, self.WINDOW_HEIGHT)
+        
+        # Set Window Icon if provided
+        if icon_path:
+            self.setWindowIcon(QIcon(icon_path))
+
+        # --- Layout Setup ---
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.setLayout(layout)
+
+        # --- Embed the Tool ---
+        try:
+            # Note: Your ColormapGenerator __init__ does not take arguments 
+            # like seed_color or color_rule anymore.
+            self._tool = ColormapGenerator(current_cmap_name=current_cmap_name)
+            
+            # CRITICAL: Connect the validity signal to the handler
+            self._tool.validityChanged.connect(self._on_validity_changed)
+            
+            layout.addWidget(self._tool)
+        except Exception as e:
+            # Fallback for debugging
+            label = QLabel(f"Error initializing tool: {e}")
+            label.setStyleSheet("color: red; padding: 20px;")
+            layout.addWidget(label)
+            print(f"Error initializing ColormapGenerator: {e}")
+
+        # --- Dialog Buttons (Ok/Cancel) ---
+        button_container = QWidget()
+        button_container.setStyleSheet("background-color: #282828; border-top: 1px solid #444;")
+        button_layout = QHBoxLayout() 
+        button_layout.setContentsMargins(15, 15, 15, 15)
+        
+        self._buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self._buttons.setStyleSheet(self.BUTTON_STYLE) # Apply style defined in class
+        
+        self._ok_button = self._buttons.button(QDialogButtonBox.Ok) # Reference to OK btn
+        
+        self._buttons.accepted.connect(self.accept)
+        self._buttons.rejected.connect(self.reject)
+        
+        button_layout.addStretch() # Push buttons to the right
+        button_layout.addWidget(self._buttons)
+        button_container.setLayout(button_layout)
+        
+        layout.addWidget(button_container)
+
+        # Initialize button state (Should match tool's initial state)
+        # Usually starts valid (loading default preset)
+        self._on_validity_changed(True)
+
+    def _on_validity_changed(self, is_valid: bool):
+        """Slot to enable/disable OK button based on tool state."""
+        if self._ok_button:
+            self._ok_button.setEnabled(is_valid)
+            
+            # Optional: Add visual feedback
+            if is_valid:
+                self._ok_button.setToolTip("Select this preset")
+            else:
+                self._ok_button.setToolTip("You have unsaved changes. Save as a new preset to continue.")
+
+    def get_cmaps(self) -> dict:
+        if hasattr(self, '_tool'):
+            return self._tool.get_cmaps() # Call the new method name
+        return {}
+
+    @staticmethod
+    def get_colormaps(parent=None, icon_path=None):
+        """
+        Static helper to run the dialog and return result directly.
+        Returns:
+            dict or None: The colormap data if accepted, else None.
+        """
+        dialog = ColorMapDialog(parent, icon_path)
+        if dialog.exec_() == QDialog.Accepted:
+            return dialog.get_cmaps()
+        return None
+
+
+# --------------------------------------------------------------------------- #
+# 1. Application entry point
+# --------------------------------------------------------------------------- #
 
 if __name__ == "__main__":
+    # Create (or reuse) the QApplication instance.
     app = QApplication.instance() or QApplication(sys.argv)
-    app.setStyle("Fusion") 
-    window = ColormapApp()
-    window.show()
-    sys.exit(app.exec())
+    app.setStyle("Fusion")
+
+    # Optional: provide a path to an icon file if you have one.
+    ICON_PATH = None  # e.g. "resources/colormap_icon.png"
+
+    # -----------------------------------------------------------------------
+    # 2. Create the dialog
+    # -----------------------------------------------------------------------
+    # NOTE: The signature is (parent=None, current_cmap_name="Viridis", icon_path=None)
+    dialog = ColorMapDialog(
+        parent=None,
+        current_cmap_name="Inferno",
+        icon_path=ICON_PATH,
+    ) 
+
+    # -----------------------------------------------------------------------
+    # 3. Run the modal dialog
+    # -----------------------------------------------------------------------
+    if dialog.exec_() == QDialog.Accepted:
+        # The instance method returns a dict with 'active', 'names' and 'cmaps'
+        cmap_data = dialog.get_cmaps()
+
+        print("--- Selection Confirmed ---")
+        print(f"Preset Name: {cmap_data['active']}")
+        print("All Preset Names:", ", ".join(cmap_data["names"]))
+        print("Colors:")
+        for name, colors in cmap_data["cmaps"].items():
+            # Print only the first 3 colours as a short preview
+            print(f"  {name}: {colors[:3]} ...")
+    else:
+        print("--- Dialog Canceled ---")
+
+    # -----------------------------------------------------------------------
+    # 4. Clean exit (0 = success)
+    # -----------------------------------------------------------------------
+    sys.exit(0)

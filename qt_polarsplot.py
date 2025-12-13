@@ -8,565 +8,447 @@ SPDX-License-Identifier: LGPL-3.0-or-later
 import sys
 from typing import List, Dict, Any, Optional
 
+import math
+
 import polars as pl
 import numpy as np
-import matplotlib.pyplot as plt
+import pyqtgraph as pg
 
-# Switch to backend_qtagg for PySide6 compatibility
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-
-
-from PySide6.QtCore import QItemSelectionModel, Qt, QItemSelection
-
+from PySide6.QtCore import QItemSelectionModel, Qt, QItemSelection, Slot, QPointF, QTimer
 from PySide6.QtGui import (QStandardItemModel, QStandardItem, QIcon, 
-                         QPixmap, QColor, QPainter, QPen
-                         )
-
+                         QPixmap, QColor, QPainter, QPen)
 from PySide6.QtWidgets import (QWidget, QListView, QVBoxLayout,
                              QApplication, QAbstractItemView, 
-                             QSplitter, QGroupBox, QSizePolicy, 
-                             )
+                             QSplitter, QGroupBox)
 
-#from qt_icons import ICON_DICT
-from qt_plottoolbar import CSVPlottoolbar
+from qt_plottoolbar import CSVPlottoolbar, DirectionalZoomViewBox
 from plotstyler import PlotStyler
 
-COLORMAPS = ("Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Managua", "Berlin", "Vanimo", "Turbo", "Terrain", "Rainbow")
+# Global configuration
+pg.setConfigOptions(antialias=True)
+#pg.setConfigOption('background', 'w')
+#pg.setConfigOption('foreground', 'k')
 
-        
+# ------------------------------------------------------------------------------
+# 2. Main Widget
+# ------------------------------------------------------------------------------
+
+
 class PolarsPlotWidget(QWidget):
     """
-    A widget that displays a single Polars DataFrame as a Matplotlib plot.
-
-    The first column in the DataFrame is used for the x-axis. Columns can be selected
-    from the list view to include them in the plot.
-
-    Attributes
-    ----------
-    dataframe (Optional[pl.DataFrame]): The current Polars DataFrame being displayed.
-    x_array (np.ndarray): NumPy array of x values (first column).
-    y_arrays (Dict[str, np.ndarray]): Mapping of column names to their NumPy arrays for plotting.
+    A widget that displays a single Polars DataFrame using PyQtGraph.
     """
 
-    def __init__(self, parent: Any = None, current_map: str = "viridis", plot_style: str = "grey") -> None:
-        """Initialize the widget with a horizontal split view for columns and plot.
-
-        The layout consists of two main areas in group boxes arranged horizontally using QSplitter.
-        Each group box is wrapped in an additional QVBoxLayout for better spacing control and
-        future extensibility. The left area shows available columns to select from, while the right
-        area displays the plot with navigation toolbar below it. Both panes are resizable by
-        dragging the splitter handle.
-
-        Args:
-            parent: Optional parent widget. Defaults to None.
-            current_map: Name of the colormap to use initially for plots. Defaults to "viridis".
-        """
+    def __init__(self, parent: Any = None, current_map_name: str = "Viridis", plot_style: str = "dark") -> None:
         super().__init__(parent)
 
         self.dataframe: Optional[pl.DataFrame] = None
         self.x_array: np.ndarray = np.array([])
         self.column_colors = {}
-        self.current_cmap = current_map
-
-        self.current_style = plot_style  # Default to light theme light or dark
+        self.plot_items: Dict[str, pg.PlotDataItem] = {}
+       
+        self.current_cmap_name = current_map_name
+        self.active_cmap = None
+        
+        self.current_style = plot_style
         self.plot_styler = PlotStyler(self.current_style)
 
-        # Initialize UI components
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        """Set up the main user interface layout."""
-        # Create horizontal splitter for resizable panes
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_splitter.setOpaqueResize(True)  # Optimize for resizing performance
-    
-        # Left pane: Column selection group box with outer vbox layout
+        main_splitter.setOpaqueResize(True)
+
+        # --- Left Pane: Columns ---
         col_group = QGroupBox("Data Columns")
         col_layout = QVBoxLayout(col_group)
-        col_layout.setContentsMargins(8, 8, 8, 8)  # Margins: left, top, right, bottom
-    
+        col_layout.setContentsMargins(4, 8, 4, 4)
+
         self.col_list_view = QListView()
         self.col_list_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.col_model = QStandardItemModel()
         self.col_list_view.setModel(self.col_model)
-        self.col_list_view.selectionModel().selectionChanged.connect(
-            self._on_selection_changed
-        )
+        self.col_list_view.selectionModel().selectionChanged.connect(self._on_selection_changed)
+        
         col_layout.addWidget(self.col_list_view)
-    
-        # Set size policy for the list view to take available space
-        self.col_list_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-    
-        # Wrap the group box in an outer vbox layout for more control
+        
         left_wrapper = QWidget()
         left_layout = QVBoxLayout(left_wrapper)
-        left_layout.setContentsMargins(4, 4, 4, 4)  # No margins since col_group has its own
+        left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.addWidget(col_group)
-    
-        # Set size policy for the wrapper to take available space but not more than needed
-        left_wrapper.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Expanding)
         left_wrapper.setMinimumWidth(150)
-    
+        
         main_splitter.addWidget(left_wrapper)
-    
-        # Right pane: Plot group box with outer vbox layout
+
+        # --- Right Pane: Plot & Toolbar ---
         plot_group = QGroupBox("Plot View")
         plot_layout = QVBoxLayout(plot_group)
-        plot_layout.setContentsMargins(8, 8, 8, 0)
-    
-        # Initialize matplotlib components
-        self.figure, self.ax = plt.subplots(figsize=(8, 5), dpi=100)
-        self.canvas = FigureCanvasQTAgg(self.figure)
-        self.toolbar = CSVPlottoolbar(self.canvas, self)#, icons_dir="src/icons")
+        plot_layout.setContentsMargins(4, 8, 4, 0)
+
+        # ----------------------------------------------------------------------
+        # INJECT CUSTOM VIEWBOX HERE
+        # ----------------------------------------------------------------------
+        self.custom_vb = DirectionalZoomViewBox()
+        self.custom_vb.apply_theme(self.plot_styler.current_style)
+        self.plot_widget = pg.PlotWidget(viewBox=self.custom_vb)
         
-        plot_layout.addWidget(self.canvas, 1)
+        self.plot_widget.addLegend(offset=(30, 30))
+        self.plot_item = self.plot_widget.getPlotItem()
+        self.plot_item.setClipToView(True)
+        self.plot_item.setDownsampling(mode='peak')
+
+        # Toolbar (Handles Pan via Middle Click automatically due to ViewBox defaults)
+        self.toolbar = CSVPlottoolbar(self.plot_widget, self.current_cmap_name, self)
+
+        plot_layout.addWidget(self.plot_widget, 1)
         plot_layout.addWidget(self.toolbar, 0)
-    
-        # Wrap the group box in an outer vbox layout
+
         right_wrapper = QWidget()
         right_layout = QVBoxLayout(right_wrapper)
-        right_layout.setContentsMargins(4, 4, 4, 4)  # No margins since plot_group has its own
+        right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.addWidget(plot_group)
-    
-        # Set size policy for the wrapper to take available space
-        right_wrapper.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-    
+        
         main_splitter.addWidget(right_wrapper)
-    
-        # Set up main layout
+        main_splitter.setStretchFactor(1, 1)
+
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(4, 4, 4, 4)
         main_layout.addWidget(main_splitter)
-     
-    
-        self.setup_auto_tightlayout()
-    
+
         self._apply_modern_style()
 
-        # ===== Style =====
-        self.setStyleSheet("""
-           QGroupBox {
-               font-weight: bold;
-               border: 1px solid #AAAAAA;
-               border-radius: 6px;
-               margin-top: 8px;
-           }
-           QGroupBox::title {
-               subcontrol-origin: margin;
-               left: 10px;
-               padding: 0 4px;
-           }
-           QPushButton {
-               padding: 4px 10px;
-           }
-           QLabel {
-               min-width: 80px;
-           }
-           QListWidget{
-               border: 1px solid #AAAAAA;
-               border: 1px solid #AAAAAA;
-           }
-       """)
-
-    def get_plot_settings(self) -> Dict[str, str]:
-        """
-        Get the current plot settings.
-        
-        Returns a dictionary containing:
-        - "style": Current style name (str)
-        - "colormap": Current colormap name (str)
-        
-        Returns:
-            Dictionary with current plot settings
-        """
-        settings_dict = {}
-        settings_dict["style"] = self.current_style
-        settings_dict["colormap"] = self.current_cmap
-        return settings_dict
-        
-    def set_plot_settings(self, settings_dict: Dict[str, Any]) -> None:
-        """
-        Set plot settings from a dictionary.
-        
-        Args:
-            settings_dict: Dictionary containing plot settings. Expected keys:
-                - "style": Style name (str)
-                - "colormap": Colormap name (str)
-        
-        The method will use default values ("grey" for style, "viridis" for colormap)
-        if the corresponding keys are missing in the input dictionary.
-        """
-        self.current_style = settings_dict.get("style", "grey")
-        self.current_cmap = settings_dict.get("colormap", "viridis")
-        self.setup_auto_tightlayout()
-        self._apply_modern_style()
-        
-    def _return_rect_selector_style(self) -> Dict[str, Any]:
-        """
-        Get rectangle selector style from the plot styler.
-        
-        Returns:
-            Dictionary containing rectangle selector properties, or empty dict if not available.
-        """
-        return self.plot_styler.get_rect_selector_style()    
-    
+    # ------------------------------------------------------------------
+    # Data Handling
     # ------------------------------------------------------------------
     def set_dataframe(self, df: pl.DataFrame) -> None:
-        """Load a single Polars DataFrame for display.
-
-        Args:
-            df: A Polars DataFrame where the first column will be used as x-axis.
-                Subsequent columns can be selected for plotting on y-axis.
-        """
         if not isinstance(df, pl.DataFrame):
             raise TypeError("Input must be a Polars DataFrame")
 
         self.dataframe = df
-
-        # Handle empty or single-column DataFrames gracefully
-        if len(df.columns) == 0:
+        self.plot_items.clear()
+        self.plot_widget.clear()
+        
+        if df.is_empty():
             self.x_array = np.array([])
             self.col_model.clear()
             return
 
-        try:
-            # Convert first column to numpy array for x values
-            self.x_array = df[df.columns[0]].to_numpy()
+        self.x_array = df[df.columns[0]].to_numpy()
+        self.plot_item.setLabel('bottom', df.columns[0])
+        self.plot_item.setLabel('left', "Photometric Value")
 
-        except Exception as e:
-            print(f"Error converting DataFrame to numpy arrays: {e}")
-            self.x_array = np.array([])
-            
-            return
-
-        # Update column selection UI with available columns (excluding x-axis)
-        self._apply_modern_style()
         self._update_column_list()
+        self.plot_item.autoRange()
 
-    # ------------------------------------------------------------------   
     def _update_column_list(self) -> None:
-        """Updates the column list display with colored icons representing each dataframe column.
-
-        This method populates the column selection model with visual representations of each
-        column, using a colormap to assign unique colors. It creates line-style icons for each
-        column and selects all columns by default when the list is populated.
-        
-        Preconditions:
-            - self.dataframe must be non-empty for updates to occur (empty or None skips update)
-        
-        Side effects:
-            - Clears and repopulates self.col_model with QStandardItems representing columns
-            - Stores column color mappings in self.column_colors dictionary
-            - Sets selection of all rows in the column list view
-        """
-        if self.dataframe is not None:
-            if self.dataframe.is_empty():
-                return
-        else:
+        if self.dataframe is None or self.dataframe.is_empty():
             return
-    
+
         cols = sorted(self.dataframe.columns[1:])
-    
         self.col_model.clear()
 
-        # Build color map
-        n_columns = len(self.dataframe.columns)
-        max_colors = min(n_columns, 256)
-        cmap = plt.get_cmap(self.current_cmap, max_colors)
-    
+        n_columns = len(cols)
+        cmap = self.active_cmap
+        
         self.column_colors = {}
-        for i, col in enumerate(self.dataframe.columns):
-            norm_i = i / (max_colors - 1) if max_colors > 1 else 0.5
-            self.column_colors[col] = cmap(norm_i)  # RGBA floats (0-1)
-    
-        # ---- Add items with icons ----
-        icon_size = 12  # small square icon
-    
-        for col in cols:
-            item = QStandardItem(col)
-    
-            r, g, b, a = self.column_colors[col]
-            qcolor = QColor(int(r * 255), int(g * 255), int(b * 255), int(a * 255))
+        # 1. Vectorized Index Calculation
+        # Map columns to 0-255 indices in one step
+        if n_columns > 1:
+            indices = np.linspace(0, 255, n_columns).astype(np.uint8)
+        else:
+            indices = np.array([128], dtype=np.uint8)
+        
+        # 2. Batch Fetch RGBA Values
+        # shape: (n_columns, 4). Much faster than looking up one-by-one.
+        rgba_batch = cmap[indices]
+        
+        # 3. Block signals to prevent UI flickering/lag during mass insertion
+        self.col_model.blockSignals(True)
+        
+        try:
+            # Zip allows us to iterate the name and the pre-fetched color together
+            for col_name, rgba in zip(cols, rgba_batch):
+                # --- Color Creation ---
+                # Unpack the numpy row directly into fromRgbF
+                qcolor = QColor.fromRgbF(*rgba)
+                self.column_colors[col_name] = qcolor
+        
+                # --- Item Creation ---
+                item = QStandardItem(col_name)
+                
+                # --- Icon Drawing ---
+                # 18x12 canvas
+                pix = QPixmap(18, 12)
+                pix.fill(Qt.GlobalColor.transparent)
+                
+                p = QPainter(pix)
+                p.setRenderHint(QPainter.RenderHint.Antialiasing)
+                
+                # Create pen with specific color
+                pen = QPen(qcolor, 3)
+                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                p.setPen(pen)
+                
+                # Draw line (x1, y1, x2, y2)
+                p.drawLine(2, 6, 16, 6)
+                p.end() # Critical: Must end painter to apply changes to pixmap
+                
+                item.setIcon(QIcon(pix))
+                self.col_model.appendRow(item)
 
-            '''
-            #Round icon
-            pix = QPixmap(icon_size, icon_size)
-            pix.fill(Qt.GlobalColor.transparent)
-    
-            pix = QPixmap(icon_size, icon_size)
-            pix.fill(Qt.GlobalColor.transparent)
-            
-            p = QPainter(pix)
-            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            p.setBrush(qcolor)
-            p.setPen(Qt.NoPen)
-            p.drawEllipse(0, 0, icon_size, icon_size)
-            p.end()
-            '''
-            #Line Icon
-            icon_w, icon_h = 18, 12
-            pix = QPixmap(icon_w, icon_h)
-            pix.fill(Qt.GlobalColor.transparent)
-            
-            p = QPainter(pix)
-            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-            
-            pen = QPen(qcolor, 3)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            p.setPen(pen)
-            
-            y = icon_h // 2
-            p.drawLine(2, y, icon_w - 2, y)
-            p.end()
-            
-            item.setIcon(QIcon(pix))
-            
-            self.col_model.appendRow(item)
+        finally:
+            # 4. Re-enable signals to trigger a single UI refresh
+            self.col_model.blockSignals(False)
+            # Force a layout update just in case the view needs it
+            if hasattr(self.col_model, 'layoutChanged'):
+                self.col_model.layoutChanged.emit()
 
-        # ---- Select all rows ----
-        sel_model = self.col_list_view.selectionModel()
-        if not cols:
+        if cols:
+            sel_model = self.col_list_view.selectionModel()
+            first = self.col_model.index(0, 0)
+            last = self.col_model.index(len(cols) - 1, 0)
+            sel_model.select(QItemSelection(first, last), 
+                           QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows)
+
+    @Slot()
+    def _on_selection_changed(self, *_) -> None:
+        if self.dataframe is None: return
+
+        selected_indexes = self.col_list_view.selectionModel().selectedIndexes()
+        selected_cols = {self.col_model.data(idx) for idx in selected_indexes}
+        
+        active_plots = set(self.plot_items.keys())
+        
+        # Remove
+        for col in active_plots - selected_cols:
+            self.plot_widget.removeItem(self.plot_items[col])
+            del self.plot_items[col]
+
+        # Add
+        cols_to_add = sorted(list(selected_cols - active_plots))
+        
+        for col in cols_to_add:
+            if col not in self.dataframe.columns: continue
+            
+            y_data = self.dataframe[col].to_numpy()
+            color = self.column_colors.get(col, QColor("white"))
+            pen = pg.mkPen(color=color, width=1.5)
+            
+            item = self.plot_widget.plot(self.x_array, y_data, pen=pen, name=col, autoDownsample=True)
+            item.setCurveClickable(True)
+            self.plot_items[col] = item
+        
+        # Apply Item Styling and Reflow Legend
+        # The new items now exist, so we can reliably update their colors.
+        self._update_legend_item_styles() 
+        self._reflow_legend()
+
+    # ------------------------------------------------------------------
+    # Legend Management
+    # ------------------------------------------------------------------
+    def toggle_legend(self, visible: bool):
+        """Show or hide the legend."""
+        if self.plot_item.legend:
+            self.plot_item.legend.setVisible(visible)
+
+    # ------------------------------------------------------------------
+    # Dynamic Resizing Logic
+    # ------------------------------------------------------------------
+    def resizeEvent(self, event):
+        """
+        Triggered whenever the widget is resized.
+        """
+        super().resizeEvent(event)
+        
+        # Critical: We use a 0ms single-shot timer to defer the reflow 
+        # until the Qt Event Loop has finished processing the layout changes.
+        # This ensures self.plot_item.vb.height() returns the NEW height, 
+        # not the OLD height.
+        QTimer.singleShot(0, self._reflow_legend)
+
+    def _reflow_legend(self):
+        """
+        Dynamically arranges legend items into columns.
+        Fixes the background box rendering by forcing layout activation.
+        """
+        legend = self.plot_item.legend
+        if not legend or not legend.items:
             return
-    
-        first_idx = self.col_model.index(0, 0)
-        last_idx = self.col_model.index(len(cols) - 1, 0)
-        selection = QItemSelection(first_idx, last_idx)
-    
-        sel_model.select(selection, QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows)
-    
-    # ------------------------------------------------------------------
-    def set_new_colormap(self, cmap):
-        """
-        Set a new colormap to be used for plotting.
+
+        items = legend.items
+        n_items = len(items)
         
-        Args:
-            cmap: The name of the colormap (str) or None. If None is provided,
-                  it will revert to the default colormap ("viridis").
-        This method updates the current colormap and triggers an update of related
-        elements that depend on the colormap
-        """
-        self.current_cmap = cmap
-        # Optionally refresh drawings, recolor lines, etc.
-        self._update_column_list()
+        layout = legend.layout
+
+        # ------------------------------------------------------------
+        # 1. Compact Style with Safety Margins
+        # ------------------------------------------------------------
+        # We need a small margin (e.g. 5px) so the background box 
+        # doesn't look like it's cutting off the text.
+        layout.setContentsMargins(5, 5, 5, 5)
+        
+        layout.setVerticalSpacing(2)
+        layout.setHorizontalSpacing(10)
+
+        # ------------------------------------------------------------
+        # 2. Viewport Constraints
+        # ------------------------------------------------------------
+        curr_h = self.plot_widget.height()
+        # Safety default if initializing
+        if curr_h < 50:
+            curr_h = 400.0
             
+        # Available height minus margins
+        available_height = max(100.0, curr_h - 60.0)
+
+        # ------------------------------------------------------------
+        # 3. Calculate Grid Dimensions
+        # ------------------------------------------------------------
+        row_height = 30.0 
+        
+        max_rows_per_col = int(available_height // row_height)
+        max_rows_per_col = max(3, max_rows_per_col) # Minimum 3 rows
+
+        n_cols = math.ceil(n_items / max_rows_per_col)
+        rows_per_col = math.ceil(n_items / n_cols)
+
+        # ------------------------------------------------------------
+        # 4. Rebuild Grid Layout
+        # ------------------------------------------------------------
+        for i in reversed(range(layout.count())):
+            layout.removeAt(i)
+
+        for idx, (sample, label) in enumerate(items):
+            col = idx // rows_per_col
+            row = idx % rows_per_col
+            
+            layout.addItem(sample, row, col * 2)
+            layout.addItem(label, row, col * 2 + 1)
+
+        # ------------------------------------------------------------
+        # 5. Fix Background Box Rendering (Critical Step)
+        # ------------------------------------------------------------
+        # 1. Force the layout to calculate new positions NOW
+        layout.activate()
+        
+        # 2. Calculate the exact size needed by the new grid
+        #    We use Qt.PreferredSize to respect the text width
+        new_size = layout.effectiveSizeHint(Qt.SizeHint.PreferredSize)
+        
+        # 3. Force the LegendItem (the box) to adopt this size
+        legend.resize(new_size)
+        
+        # 4. Trigger a full repaint of the scene to redraw the box border
+        legend.update()
+        
     # ------------------------------------------------------------------
-    def _on_selection_changed(self, *_):
-        """
-        Refresh the plot when column selection changes.
+    # Styling
+    # ------------------------------------------------------------------
+    def set_new_colormap(self, cmap_name: str, cmap) -> None:
+        self.current_cmap_name = cmap_name
+        self.active_cmap = cmap
+        current_selection = [i.row() for i in self.col_list_view.selectionModel().selectedIndexes()]
+        self._update_column_list()
         
-        This method is typically connected to a signal that triggers on selection change.
-        It ensures the visualization is updated to reflect the current data selection.
-        
-        Args:
-            *_ : Any additional arguments are ignored as this is connected to signals
-        """
-        self._update_plot()
+        sel_model = self.col_list_view.selectionModel()
+        sel_model.clearSelection()
+        for row in current_selection:
+            idx = self.col_model.index(row, 0)
+            sel_model.select(idx, QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows)
 
     def _apply_modern_style(self) -> None:
         """
-        Apply modern styling to the current plot.
+        Applies the current style configuration to the plot and its legend container.
+        """
+        style_conf = self.plot_styler.current_style
         
-        This sets a clean, professional look with appropriate spacing and formatting.
-        The actual style is determined by self.current_style and applied through
-        the plot_styler.
-        """
-        self.plot_styler.apply_style(self.current_style, self.canvas, self.ax)
+        # 1. Main Plot Background
+        self.plot_widget.setBackground(style_conf['background'])
+        
+        # 2. Grid & Axes
+        self.plot_item.showGrid(x=True, y=True, alpha=style_conf['grid_alpha'])
+        
+        axis_pen = pg.mkPen(color=style_conf['axis_color'], width=1)
+        text_pen = pg.mkPen(color=style_conf['text_color'])
+        
+        for axis in ['left', 'bottom']:
+            ax = self.plot_item.getAxis(axis)
+            ax.setPen(axis_pen)
+            ax.setTextPen(text_pen)
 
-    def setup_auto_tightlayout(self) -> None:
-        """Set up automatic tight layout updates for a Matplotlib figure in PyQt5.
-    
-        Args:
-            widget: Any QWidget that might be resized (e.g., QMainWindow or container)
-            fig: The matplotlib Figure object to keep in tight layout.
-        """
-        def on_resize(event=None):
-            try:
-                #plt.tight_layout()
-                self.figure.tight_layout(pad=1.0, w_pad=2.5, h_pad=3.0)
-                if hasattr(self.figure.canvas, 'draw_idle'):
-                    self.figure.canvas.draw_idle()
-            except Exception as e:
-                print(f"Error updating tight layout: {str(e)}")
-    
-        # Save the original resizeEvent
-        original_resize = self.resizeEvent
-    
-        def new_resize(event):
-            # First call the original resize handler to maintain all existing behavior
-            if original_resize:
-                original_resize(event)
-            on_resize()
-    
-        # Replace the widget's resizeEvent with our modified version
-        self.resizeEvent = new_resize
+        # 3. Legend Container Styling (Background and Border)
+        if self.plot_item.legend:
+            legend = self.plot_item.legend
+            
+            # A. Background (Brush)
+            bg_color = QColor(style_conf['legend_bg'])
+            bg_color.setAlpha(style_conf.get('legend_alpha', 230))
+            legend.setBrush(pg.mkBrush(bg_color))
+            
+            # B. Border (Pen)
+            border_color = style_conf.get('legend_border', style_conf['axis_color'])
+            legend.setPen(pg.mkPen(color=border_color, width=1))
+        
+        # NOTE: Text color is now handled by _update_legend_item_styles when items are added.
+        # If this method is called after items exist (e.g., on a theme switch),
+        # we still need to apply the text color.
+        self._update_legend_item_styles()
 
-    # ------------------------------------------------------------------
-    def _update_plot(self) -> None:
+    def _update_legend_item_styles(self) -> None:
         """
-        Plot selected columns from the DataFrame with modern style.
-
-        This method clears the current plot, applies styling, and plots all selected
-        columns. It also sets up interactive tooltips for hovering over lines.
+        Applies theme-specific styling (like text color) to individual legend items.
+        Must be called AFTER items have been added to the legend.
         """
-        if len(self.x_array) == 0 or not hasattr(self, 'ax'):
+        if not self.plot_item.legend:
             return
 
-        sel_col_model = self.col_list_view.selectionModel()
-        selected_cols = [self.col_model.data(idx) for idx in sel_col_model.selectedIndexes()]
-
-        # Clear and set up plot
-        self.ax.clear()
-        self._apply_modern_style()
+        legend = self.plot_item.legend
+        style_conf = self.plot_styler.current_style
         
-        plotted_any = False
-        plotted_lines: List[Any] = []
-        full_labels: List[str] = []
-        max_label_len = 25
-        i = 0
-        for col in selected_cols:
-            if not hasattr(self, 'dataframe') or self.dataframe is None:
-                continue
-            if col not in self.dataframe.columns:
-                continue
-    
-            try:
-                y = self.dataframe[col]#.to_numpy()
-            except Exception as e:
-                print(f"Error accessing column {col}: {e}")
-                continue
-    
-            ## Check for length mismatch (shouldn't happen with Polars, but good to verify)
-            #if len(self.x_array) != len(y):
-            #    print(f"Length mismatch in column {col}, skipping")
-            #    continue
-    
-            full_label = f"{col}"
-            short_label = (
-                full_label if len(full_label) <= max_label_len
-                else full_label[:max_label_len - 1] + "…"
-            )
-
-            color = self.column_colors.get(col, '#000000')
-            line, = self.ax.plot(
-                self.x_array, y,
-                label=short_label,
-                color=color,
-                linewidth=1.25,
-                alpha=0.9,
-            )
-            plotted_lines.append(line)
-            full_labels.append(full_label)
-            plotted_any = True
-            i += 1
-
-        if plotted_any:
-            # legend = self.ax.legend(
-            #     fontsize=7,
-            #     frameon=False,
-            #     labelcolor="#f0f0f0",
-            #     handlelength=2.8,
-            #     handletextpad=0.6,
-            #     borderaxespad=0.2,
-            #     loc="upper left",
-            #     bbox_to_anchor=(1.02, 1.0),
-            #     borderpad=0.0,
-            # )
-            # for text in legend.get_texts():
-            #     text.set_color("#333333")
-
-            # Axis label use first column from dataframe
-            x_axes_label = self.dataframe.columns[0]
-                      
-            # Allocate space for the right legend
-            self.figure.subplots_adjust(right=0.80)
-        else:
-            # Axis label use defaults if no data is plotted
-            x_axes_label = "x-axes"
-            self.figure.subplots_adjust(right=0.98)
-        y_axes_label = "photometric value"
-        self.ax.set_xlabel(self.dataframe.columns[0])
-        self.ax.set_ylabel(y_axes_label)
-
-        # --- Hover tooltip ---
-        annot = self.ax.annotate(
-            "",
-            xy=(0, 0),
-            xytext=(8, 8),
-            textcoords="offset points",
-            bbox=dict(boxstyle="round,pad=0.3", fc="#333333", ec="#CCCCCC", lw=0.5),
-            color="#FFFFFF",
-            fontsize=12,
-            visible=False,
-        )
-
-        def on_hover(event) -> None:
-            """
-            Handle hover events to display tooltips.
-
-            This function checks if the mouse is over a line, and if so, displays
-            an annotation with the column name.
-            """
-            if event.inaxes != self.ax:
-                annot.set_visible(False)
-                self.canvas.draw_idle()
-                return
-
-            visible = False
-            for line, label in zip(plotted_lines, full_labels):
-                cont, ind = line.contains(event)
-                if cont:
-                    x_data, y_data = line.get_data()
-                    idx = ind["ind"][0]
-                    x, y = x_data[idx], y_data[idx]
-                    annot.xy = (x, y)
-                    annot.set_text(label)
-                    line_color = line.get_color()
-                    r, g, b, a = line_color[:4]
-                    
-                    # Create darker edge by reducing lightness while preserving hue
-                    # Using a simple method: reduce each channel by 30%
-                    dark_r = max(0, r - 0.1)
-                    dark_g = max(0, g - 0.1)
-                    dark_b = max(0, b - 0.1)  # Slightly more reduction for blue
-                    edge_color = (dark_r, dark_g, dark_b, 1.0)
-                    bg_color = (dark_r, dark_g, dark_b, 0.66)
-                    annot.set_color("#FFFFFF")  # For background if needed
-                    annot.set_bbox(dict(boxstyle="round,pad=0.3", facecolor=bg_color, edgecolor = edge_color, lw=0.5))  # Slightly transparent
-                    
-                    annot.set_visible(True)                   
-                    visible = True
-                    break
-
-            if not visible and annot.get_visible():
-                annot.set_visible(False)
+        text_color_hex = style_conf.get('legend_text', style_conf['text_color'])
+        q_text_color = QColor(text_color_hex)
         
-            self.canvas.draw_idle()
-
-        # Disconnect previous event handler to avoid multiple connections
-        if hasattr(self, '_hover_cid'):
-            self.figure.canvas.mpl_disconnect(self._hover_cid)
-        self._hover_cid = self.figure.canvas.mpl_connect("motion_notify_event", on_hover)
-
-        self.figure.tight_layout(pad=1.0, w_pad=2.5, h_pad=3.0)
-        self.canvas.draw_idle()
-
+        for sample, label in legend.items:
+            # 1. Clean the text to remove old HTML artifacts (nested spans)
+            clean_text = ""
+            
+            if isinstance(label, pg.LabelItem):
+                if hasattr(label, 'item') and hasattr(label.item, 'toPlainText'):
+                    clean_text = label.item.toPlainText()
+                else:
+                    clean_text = label.text
+                
+                # Apply using pg's native color argument
+                label.setText(clean_text, color=text_color_hex)
+                
+                # Double-ensure via the native Qt item (for persistence)
+                if hasattr(label, 'item'):
+                    label.item.setDefaultTextColor(q_text_color)
+                    
+            elif hasattr(label, 'setDefaultTextColor'):
+                # Fallback for raw QGraphicsTextItems
+                label.setDefaultTextColor(q_text_color)
+        
+        # Force a redraw
+        legend.update()
 
 # ----------------------------------------------------------------------
+# Usage Example
+# ----------------------------------------------------------------------
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
+    app = QApplication.instance() or QApplication(sys.argv)
 
-    wavelengths = np.arange(400, 801, 1)
-
+    # 1. Generate Dummy Data
+    wavelengths = np.linspace(400, 800, 2000)
     data = {}
-    for i, col_name in zip(range(1, 21), [chr(c) for c in range(66, 86)]):  # B to V
-        data[col_name] = np.random.random(size=len(wavelengths))*np.random.randint(0, 3, 1)+np.random.randint(0, 50, 1)
+    for i, col_name in zip(range(1, 21), [chr(c) for c in range(66, 86)]):
+        noise = np.random.normal(0, 0.5, len(wavelengths))
+        signal = np.sin(wavelengths * 0.01 * i) * 10 + i * 5
+        data[col_name] = signal + noise
     
-    # Create DataFrame with Wavelength as first column
-    df_large = pl.DataFrame({
-        "Wavelength / nm": wavelengths,
-        **data
-    })
+    df_large = pl.DataFrame({"Wavelength / nm": wavelengths, **data})
 
+    # 2. Run Widget
     widget = PolarsPlotWidget()
     widget.set_dataframe(df_large)
     widget.resize(1000, 600)

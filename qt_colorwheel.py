@@ -1,93 +1,20 @@
+# -*- coding: utf-8 -*-
+"""
+PADDOL: Python Advanced Design & Dispersion Optimization Lab
+Copyright (c) 2025 opticsWolf
+
+SPDX-License-Identifier: LGPL-3.0-or-later
+"""
 import sys
 import numpy as np
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from PySide6.QtWidgets import (QApplication, QDialog, QWidget, QVBoxLayout, QHBoxLayout, 
                                QSizePolicy, QLabel, QComboBox, QGroupBox, QDialogButtonBox)
 from PySide6.QtGui import (QPainter, QImage, QPixmap, QPaintEvent, QColor, QIcon,
                            QPen, QBrush, QMouseEvent, QPalette, QGuiApplication, QWheelEvent)
 from PySide6.QtCore import Qt, Signal, Slot, QPointF, QRectF
 
-# --- Core Math & Logic ---
-
-class ColorMath:
-    """High-performance vectorized color conversion and utility methods."""
-    
-    @staticmethod
-    def hsv_to_rgb_vectorized(h, s, v):
-        """Converts HSV to RGB using NumPy vectorization.
-        
-        Args:
-            h: Hue (0.0 - 1.0), scalar or numpy array.
-            s: Saturation (0.0 - 1.0), scalar or numpy array.
-            v: Value (0.0 - 1.0), scalar or numpy array.
-            
-        Returns:
-            Tuple of (r, g, b) where values are 0-255.
-        """
-        h = np.asarray(h)
-        h6 = h * 6.0
-        r_base = np.clip(np.abs(h6 - 3) - 1, 0, 1)
-        g_base = np.clip(2 - np.abs(h6 - 2), 0, 1)
-        b_base = np.clip(2 - np.abs(h6 - 4), 0, 1)
-        s_inv = 1.0 - s
-        red   = v * (s_inv + s * r_base) * 255
-        green = v * (s_inv + s * g_base) * 255
-        blue  = v * (s_inv + s * b_base) * 255
-        if h.ndim == 0: return red, green, blue
-        return red, green, blue
-
-    @staticmethod
-    def get_contrast_color(r, g, b) -> QColor:
-        """Calculates luminance to return optimal text contrast color (Black/White)."""
-        lum = 0.299 * r + 0.587 * g + 0.114 * b
-        return Qt.GlobalColor.black if lum > 140 else Qt.GlobalColor.white
-
-
-class HarmonyEngine:
-    """Logic for calculating color harmony relationships."""
-    
-    RELATIONSHIPS = {
-        "Single":               [0],
-        "Analogous":            [0, 30, 60],
-        "Complementary":        [0, 180],
-        "Split-Complementary":  [0, 150, 210],
-        "Triadic":              [0, 120, 240],
-        "Double-Complementary": [0, 30, 180, 210],
-        "Square":               [0, 90, 180, 270],
-        "Tetradic":             [0, 60, 180, 240],
-        
-        # --- NEW 5-Point Methods ---
-        
-        # 1. Pentagonal: Perfectly balanced, high contrast, vibrant.
-        # Spaced every 72 degrees (360 / 5)
-        "Pentagonal":           [0, 72, 144, 216, 288],
-        
-        # 2. 5-Tone Analogous: Very low contrast, unified look.
-        # Extends the analogous run further
-        "Analogous 5-Tone":     [0, 30, 60, 90, 120],
-        
-        # 3. Star (Split-Analogous): Complex, rich harmony.
-        # Base (0), two split complements (150, 210), and two wide accents (72, 288 approx)
-        # Or simpler: Base, +/- 30 (Analogous), +/- 150 (Split Comp)
-        "Star 5-Tone":          [0, 30, 330, 150, 210], # 330 is -30 normalized
-    }
-
-    @staticmethod
-    def get_harmonies(base_hue: float, mode: str) -> List[float]:
-        """Generates a list of hue values based on the selected harmony mode.
-        
-        Args:
-            base_hue: A float between 0.0 and 1.0 representing the starting color.
-            mode: The dictionary key for the harmony rule.
-            
-        Returns:
-            List[float]: A list of hue values (0.0-1.0).
-        """
-        offsets = HarmonyEngine.RELATIONSHIPS.get(mode, [0])
-        
-        # Calculate hues and ensure they wrap around 1.0 using modulo
-        return [(base_hue + (deg / 360.0)) % 1.0 for deg in offsets]
-
+from colorengine import ColorMath, HarmonyEngine
 
 # --- UI Components ---
 class ClickableLabel(QLabel):
@@ -455,10 +382,17 @@ class ColorWheelWidget(QWidget):
         self._pixmap = QPixmap.fromImage(img.copy())
 
 # --- Main Window ---
-class ColorPickerTool(QWidget):
+
+class ColorWheelTool(QWidget):
+    """
+    A comprehensive tool for selecting colors and generating harmonic palettes.
+    
+    Supports both vertical and horizontal layouts.
+    """
+
     GROUPBOX_STYLE = """
         QGroupBox {
-            border: 1px solid #555;
+            border: 1px solid #444;
             border-radius: 10px;
             margin-top: 10px; 
             padding: 4px;
@@ -503,10 +437,22 @@ class ColorPickerTool(QWidget):
         }
     """
     
-    def __init__(self, seed_color=None, color_rule="Complementary"):
+    def __init__(self, 
+                 seed_color: Optional[str] = None, 
+                 color_rule: str = "Complementary", 
+                 orientation: str = "horizontal"):
+        """
+        Initialize the Color Picker Tool.
+
+        Args:
+            seed_color (str, optional): Hex code or name to initialize the color state.
+            color_rule (str): The initial harmony rule to apply.
+            orientation (str): Layout mode, either "vertical" or "horizontal".
+        """
         super().__init__()
         self.hue, self.sat, self.bri = 0.0, 1.0, 1.0
         self.initial_rule = color_rule
+        self.orientation = orientation.lower()
         
         # Parse seed color if provided
         if seed_color:
@@ -520,16 +466,31 @@ class ColorPickerTool(QWidget):
         self.init_ui()
 
     def init_ui(self):
-        # Main Window Layout
-        layout = QVBoxLayout(self)
-        layout.setSpacing(10)
-        layout.setContentsMargins(12, 12, 12, 12)
+        """Builds the UI elements based on the specified orientation."""
+        
+        # 1. Create the Main Layout based on orientation
+        if self.orientation == "horizontal":
+            main_layout = QHBoxLayout(self)
+        else:
+            main_layout = QVBoxLayout(self)
+            
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(12, 12, 12, 12)
 
-        # 1. Color Wheel
+        # --- Section 1: Color Wheel (Now wrapped in GroupBox) ---
+        self.group_wheel = QGroupBox("Color Wheel")
+        self.group_wheel.setStyleSheet(self.GROUPBOX_STYLE)
+        wheel_layout = QVBoxLayout(self.group_wheel)
+        wheel_layout.setContentsMargins(12, 12, 12, 12) # Adjust for title overlap
+        
         self.wheel = ColorWheelWidget(size=400, thickness_pct=0.30)
-        layout.addWidget(self.wheel, 1)
+        # Ensure wheel expands correctly in horizontal mode
+        self.wheel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.wheel.setMinimumWidth(300)
+        self.wheel.setMinimumHeight(300)
+        wheel_layout.addWidget(self.wheel)
 
-        # 2. Controls GroupBox
+        # --- Section 2: Controls ---
         self.group_controls = QGroupBox("Adjustments")
         self.group_controls.setStyleSheet(self.GROUPBOX_STYLE)
         controls_layout = QVBoxLayout(self.group_controls)
@@ -556,16 +517,36 @@ class ColorPickerTool(QWidget):
         controls_layout.addWidget(QLabel("Brightness"))
         controls_layout.addWidget(self.slider_bri)
 
-        layout.addWidget(self.group_controls)
-
-        # 3. Harmony Palette GroupBox
+        # --- Section 3: Harmony Palette ---
         self.group_harmony = QGroupBox("Color Palette")
         self.group_harmony.setStyleSheet(self.GROUPBOX_STYLE)
         self.cards_layout = QHBoxLayout(self.group_harmony)
         self.cards_layout.setSpacing(10)
         self.cards_layout.setContentsMargins(0, 8, 0, 8)
+
+        # --- Assembly Phase ---
         
-        layout.addWidget(self.group_harmony)
+        if self.orientation == "horizontal":
+            # Left Side: The Wheel Group
+            main_layout.addWidget(self.group_wheel, 2) # Stretch factor 2
+
+            # Right Side: Container for Controls + Palette
+            right_container = QWidget()
+            right_layout = QVBoxLayout(right_container)
+            right_layout.setContentsMargins(0, 0, 0, 0)
+            right_layout.setSpacing(10)
+            
+            right_layout.addWidget(self.group_controls)
+            right_layout.addWidget(self.group_harmony)
+            # Add spacer to push content up if needed, or let it stretch
+            right_layout.addStretch() 
+            
+            main_layout.addWidget(right_container, 1) # Stretch factor 1
+        else:
+            # Vertical Mode: Stack everything
+            main_layout.addWidget(self.group_wheel, 1)
+            main_layout.addWidget(self.group_controls)
+            main_layout.addWidget(self.group_harmony)
 
         # Connections
         self.wheel.hueChanged.connect(self._on_hue)
@@ -585,23 +566,23 @@ class ColorPickerTool(QWidget):
         self._update()
     
     @Slot(float)
-    def _on_hue(self, h): 
+    def _on_hue(self, h: float): 
         self.hue = h
         self._update()
 
     @Slot(int)
-    def _on_sat(self, v): 
+    def _on_sat(self, v: int): 
         self.sat = v/255.0
         self.wheel.set_saturation_brightness(self.sat, self.bri)
         self._update()
 
     @Slot(int)
-    def _on_bri(self, v): 
+    def _on_bri(self, v: int): 
         self.bri = v/255.0
         self.wheel.set_saturation_brightness(self.sat, self.bri)
         self._update()
 
-    def _on_card_clicked(self, h):
+    def _on_card_clicked(self, h: float):
         """Sets the clicked hue as the primary hue and refreshes palette."""
         self.hue = h
         self.wheel.set_hue(h)
@@ -676,10 +657,11 @@ class ColorGeneratorDialog(QDialog):
         }
     """
 
-    WINDOW_WIDTH = 540
-    WINDOW_HEIGHT = 840
+    WINDOW_WIDTH = 400
+    WINDOW_HEIGHT = 400
 
-    def __init__(self, parent=None, seed_color='#FF0000', color_rule="Complementary", icon=None):
+    def __init__(self, parent=None, seed_color='#FF0000', color_rule="Complementary",
+                 icon=None, orientation: str = "horizontal"):
         super().__init__(parent)
         self.setWindowTitle("Generate Color Harmonies")
         self.resize(self.WINDOW_WIDTH, self.WINDOW_HEIGHT)
@@ -695,7 +677,7 @@ class ColorGeneratorDialog(QDialog):
         self.setLayout(layout)
 
         try:
-            self._tool = ColorPickerTool(seed_color=seed_color, color_rule=color_rule)
+            self._tool = ColorWheelTool(seed_color=seed_color, color_rule=color_rule, orientation=orientation)
             layout.addWidget(self._tool)
         except Exception as e:
             raise RuntimeError(f"Failed to initialize color picker tool: {str(e)}") from e
@@ -720,17 +702,21 @@ class ColorGeneratorDialog(QDialog):
 
 
 if __name__ == "__main__":
+    # 1. Safe Application Instance Check
     app = QApplication.instance() or QApplication(sys.argv)
-    app.setStyle("Fusion")
-    p = QPalette()
-    p.setColor(QPalette.ColorRole.Window, QColor(40, 40, 40))
-    p.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.white)
-    app.setPalette(p)
-    
+
+    # 2. Execution
+    # Ensure ColorGeneratorDialog is imported or defined
     dlg = ColorGeneratorDialog(seed_color="#3daee9", color_rule="Triadic")
+    
     if dlg.exec():
-        print("Accepted Colors:")
-        for c in dlg.get_colors():
+        # Correctly unpack the Tuple returned by get_colors
+        generated_colors, rule_name = dlg.get_colors()
+        
+        print(f"Accepted Colors (Rule: {rule_name}):")
+        
+        for c in generated_colors:
+            # f-strings for clean, efficient formatting
             print(f" - {c.name()} (RGB: {c.red()}, {c.green()}, {c.blue()})")
     
     sys.exit()
