@@ -287,25 +287,21 @@ class CSVPlottoolbar(QWidget):
         """
         # CRITICAL: We call ColorMapDialog.get_colormap which returns the dictionary 
         # from get_cmap_dict (which includes the 'active' name and all 'presets').
-        result_dict = ColorMapDialog.get_colormaps(parent=self, icon_path=ICON_DICT.get("colormap"))
+        result_dict = ColorMapDialog.get_colormaps(parent=self, icon_path=ICON_DICT.get("colormap"), current_cmap_name=self.current_cmap_name)
 
         if result_dict:
             # 1. Extract the returned structure
             active_preset: str = result_dict.get('active', 'Viridis')
             cmap_names: List[str] = result_dict.get('names', [])
             cmap_dict: Dict[str, Dict[str, Any]] = result_dict.get('cmaps', {})
-             
+
+
+            # --- Update the Toolbar UI and Cache ---
             if cmap_names:
                 self.cmap_list = cmap_names
             
             if cmap_dict:
                 self.cmap_dict = cmap_dict
-            
-            # --- Update the Toolbar UI and Cache ---
-            
-            # The result_dict already contains the fully refreshed list and presets, 
-            # so we update the toolbar's internal state directly.
-            self.cmap_list = cmap_names
 
             # Update the QComboBox list
             self.cmap_selector.blockSignals(True)
@@ -313,8 +309,10 @@ class CSVPlottoolbar(QWidget):
             self.cmap_selector.addItems(self.cmap_list)
             self.cmap_selector.blockSignals(False)
             # Set the selector to the active name (which might be the newly saved preset)
+            self.current_cmap_name = active_preset
             idx = self.cmap_selector.findText(active_preset)
             if idx >= 0:
                 self.cmap_selector.setCurrentIndex(idx)
+                self._on_cmap_changed(active_preset)
         
             print(f"Applied colormap: '{active_preset}.")
