@@ -1,0 +1,85 @@
+{
+    "GreenYellow": {
+        "colors": [
+            "#00aa7f",
+            "#00ff7f",
+            "#aaff7f",
+            "#ffff7f"
+        ],
+        "mode": "luma"
+    },
+    "Grayscale": {
+        "colors": [
+            "#000000",
+            "#555555",
+            "#aaaaaa",
+            "#ffffff"
+        ],
+        "mode": "strict"
+    },
+    "BlueGreen": {
+        "colors": [
+            "#00007f",
+            "#0060a5",
+            "#2ddf5d",
+            "#82ff5c"
+        ],
+        "mode": "balanced"
+    },
+    "OrangeYellow": {
+        "colors": [
+            "#cc3608",
+            "#ff5500",
+            "#ffbf00",
+            "#fff23c"
+        ],
+        "mode": "luma"
+    },
+    "BluePink": {
+        "colors": [
+            "#00007f",
+            "#5555ff",
+            "#ff55ff",
+            "#ff007f"
+        ],
+        "mode": "balanced"
+    },
+    "GreenOrange": {
+        "colors": [
+            "#00aa00",
+            "#aaff7f",
+            "#ffff7f",
+            "#ffaa00"
+        ],
+        "mode": "luma"
+    },
+    "BrightBluePink": {
+        "colors": [
+            "#239dd1",
+            "#2346d1",
+            "#5623d1",
+            "#ad23d1",
+            "#d1239d"
+        ],
+        "mode": "luma"
+    },
+    "Fire": {
+        "colors": [
+            "#2e0909",
+            "#ff4d00",
+            "#ffea00",
+            "#ffffff"
+        ],
+        "mode": "luma"
+    },
+    "PeachFuss": {
+        "colors": [
+            "#c263db",
+            "#db63b7",
+            "#db637b",
+            "#db8763",
+            "#dbc263"
+        ],
+        "mode": "strict"
+    }
+}
