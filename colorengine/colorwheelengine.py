@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Created on Thu Dec 11 23:03:37 2025
+PADDOL: Python Advanced Design & Dispersion Optimization Lab
+Copyright (c) 2025 opticsWolf
 
-@author: Frank
+SPDX-License-Identifier: LGPL-3.0-or-later
 """
-
 import numpy as np
 from PySide6.QtGui import QColor
 from PySide6.QtCore import Qt

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 PADDOL: Python Advanced Design & Dispersion Optimization Lab
 Copyright (c) 2025 opticsWolf
@@ -18,14 +19,70 @@ __all__ = [
 # Immutable default configuration.
 # We use a private constant for the source of truth.
 _DEFAULT_PRESETS: Final[Dict[str, Dict[str, Any]]] = {
-    "Viridis": {"colors": ["#440154", "#21918c", "#fde725"], "mode": "strict"},
-    "Plasma":  {"colors": ["#0d0887", "#cc4778", "#f0f921"], "mode": "strict"},
-    "Inferno": {"colors": ["#000004", "#bb3754", "#fca50a", "#fcffa4"], "mode": "strict"},
-    "Magma":   {"colors": ["#000004", "#51127c", "#b73779", "#fcfdbf"], "mode": "strict"},
-    "Cividis": {"colors": ["#002051", "#757633", "#fdea45"], "mode": "strict"},
-    "Turbo":   {"colors": ["#30123b", "#4686fb", "#1ae4b6", "#a2fc3c",
-                           "#fbb41a", "#e34509", "#7a0403"],"mode": "strict"},
-}
+    "Viridis": {
+        "colors": [
+            "#400050",
+            "#3b518a",
+            "#1f8f8c",
+            "#5cc960",
+            "#fde516"
+        ],
+        "mode": "balanced"
+    },
+    "Plasma": {
+        "colors": [
+            "#060083",
+            "#7b02a7",
+            "#ca4578",
+            "#f8933f",
+            "#eef813"
+        ],
+        "mode": "balanced"
+    },
+    "Inferno": {
+        "colors": [
+            "#020210",
+            "#540f6d",
+            "#ba3554",
+            "#f98c08",
+            "#fcfe9e"
+        ],
+        "mode": "balanced"
+    },
+    "Magma": {
+        "colors": [
+            "#030211",
+            "#4e117b",
+            "#b53678",
+            "#fb865f",
+            "#fbfcba"
+        ],
+        "mode": "balanced"
+    },
+    "Cividis": {
+        "colors": [
+            "#001d49",
+            "#414d6b",
+            "#7b7b77",
+            "#bbad6b",
+            "#fde529"
+        ],
+        "mode": "strict"
+    },
+    "Turbo": {
+        "colors": [
+            "#2f123b",
+            "#456ae2",
+            "#28baec",
+            "#30f198",
+            "#a0fc3c",
+            "#edcf39",
+            "#fb7e20",
+            "#d02f03",
+            "#7a0200"
+        ],
+        "mode": "strict"
+    }}
 
 CMAP_PRESET_JSON = "colorengine/presets.json"
 
