@@ -25,19 +25,28 @@ from qt_colormaps import ColorMapDialog, OklabEngine, ColorMapsPresetManager
 
 class DirectionalZoomViewBox(pg.ViewBox):
     """
-    Custom ViewBox logic:
-    - Left Drag (Left->Right): Rect Zoom In.
-    - Left Drag (Right->Left): Zoom Out (2x).
-    - Middle Drag: Pan.
-    - Right Drag: Disabled (prevents accidental scaling).
+    Custom ViewBox implementation that provides specific directional mouse controls.
+
+    Custom Behaviors:
+        - Left Drag (Left->Right): Rect Zoom In.
+        - Left Drag (Right->Left): Zoom Out (2x).
+        - Middle Drag: Pan.
+        - Right Drag: Disabled (prevents accidental scaling).
     """
     def __init__(self, parent=None):
+        """Initializes the custom ViewBox."""
         super().__init__(parent)
         self.setMouseMode(self.RectMode)
         self.rbScaleBox.setPen(pg.mkPen(color=(128, 128, 128, 128), width=2))
         self.rbScaleBox.setBrush(pg.mkBrush(color=(164, 164, 164, 78)))
         
-    def apply_theme(self, theme_dict):
+    def apply_theme(self, theme_dict: Dict[str, str]):
+        """
+        Applies custom theme colors to the rectangular zoom box (rbScaleBox).
+
+        Args:
+            theme_dict: Dictionary containing theme-specific color keys.
+        """
         pen_color = theme_dict.get('zoombox_color', '#A4A4A44E' )
         brush_color = theme_dict.get('zoombox_border', '#80808080')
         
@@ -47,6 +56,16 @@ class DirectionalZoomViewBox(pg.ViewBox):
         self.rbScaleBox.setBrush(pg.mkBrush(color=brush_color))
         
     def mouseDragEvent(self, ev, axis=None):
+        """
+        Handles mouse drag events for custom zooming and panning logic.
+
+        Overrides the default pyqtgraph behavior for left/middle clicks.
+        Right click zoom is disabled.
+
+        Args:
+            ev: The QMouseEvent.
+            axis: Optional axis restriction (ignored for this custom logic).
+        """
         # --- Disable Right Mouse Drag (Standard Zoom) ---
         if ev.button() == Qt.RightButton:
             ev.accept()
@@ -82,9 +101,20 @@ class DirectionalZoomViewBox(pg.ViewBox):
 
 class CSVPlottoolbar(QWidget):
     """
-    Toolbar for controlling a PyQtGraph PlotWidget.
+    Toolbar for controlling a PyQtGraph PlotWidget (used for Polars data visualization).
+
+    Provides controls for view manipulation, data/image export, coordinate tracking,
+    and colormap selection.
     """
     def __init__(self, plot_widget: pg.PlotWidget, current_cmap_name: str = 'Viridis', parent: QWidget | None = None):
+        """
+        Initializes the toolbar.
+
+        Args:
+            plot_widget: The pg.PlotWidget instance this toolbar controls.
+            current_cmap_name: The currently active colormap name.
+            parent: The parent QWidget, typically a PolarsPlotWidget instance.
+        """
         super().__init__(parent)
         self.plot_widget = plot_widget
         self.parent_widget = parent  # Reference to PolarsPlotWidget
@@ -101,10 +131,11 @@ class CSVPlottoolbar(QWidget):
         self._build_ui()
         
         self.proxy = pg.SignalProxy(self.plot_widget.scene().sigMouseMoved, 
-                                  rateLimit=60, slot=self._update_coordinates)
+                                    rateLimit=60, slot=self._update_coordinates)
         
 
     def _build_ui(self) -> None:
+        """Constructs and lays out all widgets and connects signals."""
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 4)
         layout.setSpacing(8)
@@ -178,7 +209,18 @@ class CSVPlottoolbar(QWidget):
         self.cmap_button.clicked.connect(self.open_cmap_dialog)
         layout.addWidget(self.cmap_button)
 
-    def _make_btn(self, text, tooltip, icon_path) -> QToolButton:
+    def _make_btn(self, text: str, tooltip: str, icon_path: str | None) -> QToolButton:
+        """
+        Creates a consistent QToolButton with optional icon.
+
+        Args:
+            text: Text to display if no icon is available.
+            tooltip: Tooltip for the button.
+            icon_path: File path to the icon image.
+
+        Returns:
+            The configured QToolButton instance.
+        """
         btn = QToolButton()
         if icon_path:
             btn.setIcon(QIcon(icon_path))
@@ -190,25 +232,35 @@ class CSVPlottoolbar(QWidget):
         return btn
 
     def _toggle_legend(self, checked: bool):
-        """Passes the toggle command to the parent widget."""
+        """
+        Toggles the plot legend visibility via the parent widget.
+
+        Args:
+            checked: State of the toggle button (True to show, False to hide).
+        """
         if hasattr(self.parent_widget, "toggle_legend"):
             self.parent_widget.toggle_legend(checked)
 
-    # ... [Keep previous _update_coordinates, copy_data_safe, copy_plot_image, save_plot methods] ...
-    # (Ensure you keep the "Stable" QPainter implementation of copy_plot_image from the previous step)
     def _update_coordinates(self, evt):
+        """Updates the status bar label with the current mouse cursor coordinates."""
         pos = evt[0]
         if self.plot_widget.sceneBoundingRect().contains(pos):
             mouse_point = self.plot_widget.plotItem.vb.mapSceneToView(pos)
             self.xy_label.setText(f"X: {mouse_point.x():.2f}  Y: {mouse_point.y():.2f}")
 
-    def _on_cmap_changed(self, text):
+    def _on_cmap_changed(self, text: str):
+        """
+        Updates the current colormap in the parent widget when the ComboBox changes.
+
+        Args:
+            text: The new colormap name selected.
+        """
         if hasattr(self.parent_widget, "set_new_colormap"):
             self.current_cmap_name = text
             self.parent_widget.set_new_colormap(self.current_cmap_name , self.cmap_dict.get(self.current_cmap_name, 'Viridis'))
             
     def copy_data_safe(self) -> None:
-        """Safely copies the parent's dataframe to clipboard as TSV."""
+        """Copies the parent's dataframe data to the clipboard as TSV, with a size limit."""
         if not self.parent_widget or self.parent_widget.dataframe is None:
             return
 
@@ -219,7 +271,7 @@ class CSVPlottoolbar(QWidget):
         try:
             if df.height > 500_000:
                 QMessageBox.warning(self, "Data Too Large", 
-                                  "Dataset > 500k rows. Please use Save to File.")
+                                    "Dataset > 500k rows. Please use Save to File.")
                 return
 
             buffer = io.BytesIO()
@@ -235,7 +287,7 @@ class CSVPlottoolbar(QWidget):
             QMessageBox.critical(self, "Copy Error", f"Failed to copy data:\n{str(e)}")
 
     def copy_plot_image(self):
-        """Render the plot widget to a QImage and copy to clipboard."""
+        """Renders the plot widget to a high-resolution QImage and copies it to the clipboard."""
         try:
             widget = self.plot_widget
             target_w = 1920
@@ -258,6 +310,7 @@ class CSVPlottoolbar(QWidget):
             QMessageBox.critical(self, "Image Copy Error", f"Failed to copy image:\n{str(e)}")
 
     def save_plot(self):
+        """Opens a file dialog to save the current plot as a PNG, JPG, or SVG file."""
         fname, _ = QFileDialog.getSaveFileName(self, "Save Plot", "", "Images (*.png *.jpg *.svg)")
         if not fname: return
         try:
@@ -282,8 +335,10 @@ class CSVPlottoolbar(QWidget):
 
     def open_cmap_dialog(self):
         """
-        Opens the Colormap Dialog, processes the result (which contains all presets 
-        and the active name), and updates the plot and the selector control.
+        Opens the Colormap Dialog to allow users to modify or select a new colormap.
+
+        If a new colormap is selected or created, it updates the internal state,
+        refreshes the selector, and applies the new map to the plot.
         """
         # CRITICAL: We call ColorMapDialog.get_colormap which returns the dictionary 
         # from get_cmap_dict (which includes the 'active' name and all 'presets').
@@ -314,5 +369,5 @@ class CSVPlottoolbar(QWidget):
             if idx >= 0:
                 self.cmap_selector.setCurrentIndex(idx)
                 self._on_cmap_changed(active_preset)
-        
+            
             print(f"Applied colormap: '{active_preset}.")

@@ -6,14 +6,14 @@ Copyright (c) 2025 opticsWolf
 SPDX-License-Identifier: LGPL-3.0-or-later
 """
 import sys
-#import json
+# import json
 from typing import List, Optional, Union, Dict, Any
 
 # PySide6 imports
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout,
     QPushButton, QHBoxLayout, QGroupBox, QScrollArea,
-    QRadioButton, QButtonGroup, QSizePolicy, QComboBox, 
+    QRadioButton, QButtonGroup, QSizePolicy, QComboBox,
     QLineEdit, QMessageBox, QDialog, QFrame, QDialogButtonBox
 )
 from PySide6.QtGui import (
@@ -31,21 +31,37 @@ from qt_colorwheel import ColorGeneratorDialog
 # ------------------------------------------------------------
 def numpy_to_qpixmap(data: np.ndarray, height: int = 100) -> QPixmap:
     """
-    Optimized conversion from NumPy array to QPixmap.
+    Converts an (N, 3) NumPy array of RGB float values (0.0-1.0) into a QPixmap.
+
+    This conversion is optimized for speed by creating a QImage directly
+    from the array buffer, avoiding unnecessary copying where possible.
+
+    Args:
+        data (np.ndarray): The input NumPy array of shape (N, 3) where N is the
+            number of color steps, and each row is [R, G, B] floats (0.0-1.0).
+        height (int): The target height for the resulting QPixmap (default 100).
+            Note: The generated QImage internally has a height of 1 pixel before
+            being converted to a stretchable QPixmap.
+
+    Returns:
+        QPixmap: A QPixmap ready for display.
+
+    Raises:
+        ValueError: If the input data is not an (N, 3) array.
     """
     if data.ndim != 2 or data.shape[1] != 3:
         raise ValueError("Input data must be an (N, 3) array.")
-        
+
     # Ensure contiguous array for QImage, cast to uint8 [0-255]
     rgb_int = np.clip(data * 255.0, 0, 255).astype(np.uint8)
-    
+
     # Check for C-contiguous to avoid copying if possible
     if not rgb_int.flags['C_CONTIGUOUS']:
         rgb_int = np.ascontiguousarray(rgb_int)
 
     height_img, width_img = 1, rgb_int.shape[0]
     bytes_per_line = width_img * 3
-    
+
     # Create QImage directly from data buffer
     q_image = QImage(
         rgb_int.data,
@@ -54,7 +70,7 @@ def numpy_to_qpixmap(data: np.ndarray, height: int = 100) -> QPixmap:
         bytes_per_line,
         QImage.Format_RGB888
     )
-    
+
     # Copy to decouple from numpy array memory
     pixmap = QPixmap.fromImage(q_image.copy())
     return pixmap
@@ -62,11 +78,19 @@ def numpy_to_qpixmap(data: np.ndarray, height: int = 100) -> QPixmap:
 
 # --- UI Components ---
 class ColorRow(QWidget):
-    """A single row representing a color, with Insert and Remove actions."""
-    
+    """
+    A single widget row displaying a color point in the gradient list,
+    with buttons for changing the color, inserting a new color below, and removing itself.
+
+    Signals:
+        colorChanged: Emitted when the color of this row is modified.
+        removeRequested (object): Emits self when the remove button is clicked.
+        insertRequested (object): Emits self when the insert button is clicked.
+    """
+
     colorChanged = Signal()
-    removeRequested = Signal(object) # Emits self
-    insertRequested = Signal(object) # Emits self (New Signal)
+    removeRequested = Signal(object)  # Emits self
+    insertRequested = Signal(object)  # Emits self (New Signal)
 
     ICON_BUTTON_STYLE = """
         QPushButton {
@@ -91,20 +115,27 @@ class ColorRow(QWidget):
     """
 
     def __init__(self, color: QColor, can_remove: bool = True) -> None:
+        """
+        Initializes the ColorRow widget.
+
+        Args:
+            color (QColor): The initial color for this row.
+            can_remove (bool): Whether the remove button should be visible initially.
+        """
         super().__init__()
         self._color = color
-        
+
         layout = QHBoxLayout()
         layout.setContentsMargins(0, 2, 0, 2)
         layout.setSpacing(5)
-        
+
         # 1. Color Button
         self.btn_color = QPushButton()
         self.btn_color.setFixedHeight(28)
         self.btn_color.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_color.clicked.connect(self.open_color_dialog)
         self.update_button_style()
-        
+
         # 2. Insert Button (+)
         self.btn_insert = QPushButton("")
         self.btn_insert.setIcon(QIcon(ICON_DICT['plus_']))
@@ -114,7 +145,7 @@ class ColorRow(QWidget):
         self.btn_insert.setToolTip("Insert new color below")
         # Emit self so parent knows which row triggered the insert
         self.btn_insert.clicked.connect(lambda: self.insertRequested.emit(self))
-        
+
         # 3. Remove Button (x)
         self.btn_remove = QPushButton("")
         self.btn_remove.setIcon(QIcon(ICON_DICT['x']))
@@ -124,28 +155,40 @@ class ColorRow(QWidget):
         self.btn_remove.setToolTip("Remove this color")
         self.btn_remove.clicked.connect(lambda: self.removeRequested.emit(self))
         self.btn_remove.setVisible(can_remove)
-        
+
         # 4. Add to Layout
         layout.addWidget(self.btn_color, 1)  # Stretch factor 1
         layout.addWidget(self.btn_insert, 0) # Fixed size
         layout.addWidget(self.btn_remove, 0) # Fixed size
         self.setLayout(layout)
 
-    def color(self) -> QColor: 
+    def color(self) -> QColor:
+        """
+        Returns the QColor currently set for this row.
+
+        Returns:
+            QColor: The current color.
+        """
         return self._color
-        
-    def set_remove_enabled(self, enabled: bool) -> None: 
+
+    def set_remove_enabled(self, enabled: bool) -> None:
+        """
+        Sets the visibility of the remove button.
+
+        Args:
+            enabled (bool): True to show the remove button, False to hide it.
+        """
         self.btn_remove.setVisible(enabled)
 
     def open_color_dialog(self) -> None:
-        """Opens the Color Picker Tool in a Dialog to replace current color."""
+        """Opens the Color Picker Tool Dialog to select a new color."""
         dlg = ColorGeneratorDialog(
-            parent=self, 
-            seed_color=self._color.name(), 
+            parent=self,
+            seed_color=self._color.name(),
             color_rule="Single",
-            #allowed_rules=["Single"]  # NEW: Restrict to only Single mode
+            # allowed_rules=["Single"]  # NEW: Restrict to only Single mode
         )
-        
+
         if dlg.exec() == QDialog.DialogCode.Accepted:
             colors, _ = dlg.get_colors()
             if colors:
@@ -154,10 +197,11 @@ class ColorRow(QWidget):
                 self.colorChanged.emit()
 
     def update_button_style(self) -> None:
+        """Updates the button's background color and text based on the current color."""
         # Determine contrast color
         text_col = "black" if self._color.lightness() > 128 else "white"
         hex_code = self._color.name().upper()
-        
+
         self.btn_color.setText(f"{hex_code}")
         self.btn_color.setStyleSheet(
             f"background-color: {hex_code}; "
@@ -168,29 +212,47 @@ class ColorRow(QWidget):
 
 
 class RoundedGradientWidget(QWidget):
-    """A custom widget that renders a QPixmap with dynamic rounded corners.
-    
-    This widget ensures that even when resized, the border radius remains 
-    fixed and circular, while the content scales to fill the space.
+    """
+    A custom widget that renders a QPixmap with dynamic rounded corners.
+
+    The widget uses a QPainterPath clipping mask to ensure the gradient
+    texture is displayed with fixed, rounded edges regardless of the widget's size.
     """
 
     def __init__(self, parent: Optional[QWidget] = None, radius: int = 12):
+        """
+        Initializes the RoundedGradientWidget.
+
+        Args:
+            parent (Optional[QWidget]): The parent widget.
+            radius (int): The radius for the rounded corners in pixels.
+        """
         super().__init__(parent)
         self._pixmap: Optional[QPixmap] = None
         self._radius = radius
-        
+
         # Performance: Set a minimum size so it doesn't collapse
         self.setMinimumHeight(64)
         # Policy: Expand horizontally, fixed-ish vertically (or change as needed)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
     def set_gradient(self, pixmap: QPixmap) -> None:
-        """Update the stored gradient texture and trigger a repaint."""
+        """
+        Updates the stored gradient texture and triggers a repaint.
+
+        Args:
+            pixmap (QPixmap): The QPixmap containing the gradient texture.
+        """
         self._pixmap = pixmap
         self.update()  # Schedule a paintEvent
 
     def paintEvent(self, event: QPaintEvent) -> None:
-        """Render the gradient with a clipping mask."""
+        """
+        Renders the gradient using a clipping mask for rounded corners.
+
+        Args:
+            event (QPaintEvent): The paint event triggered by the Qt framework.
+        """
         if not self._pixmap:
             return
 
@@ -213,8 +275,12 @@ class RoundedGradientWidget(QWidget):
 class ColormapGenerator(QWidget):
     """
     A widget for creating, managing, and visualizing gradient colormaps.
-    
-    Includes preset management, Oklab interpolation support, and state validation.
+
+    Includes preset management, Oklab interpolation support, and state validation
+    to check if the current settings match the loaded preset.
+
+    Signals:
+        validityChanged (bool): Emitted when the 'dirty' state changes (True if clean/saved).
     """
 
     validityChanged = Signal(bool)
@@ -294,7 +360,7 @@ class ColormapGenerator(QWidget):
 
     def __init__(self, current_cmap_name: str = "Viridis") -> None:
         """
-        Initialize the ColormapGenerator.
+        Initializes the ColormapGenerator.
 
         Args:
             current_cmap_name (str): The name of the preset to load initially.
@@ -311,6 +377,7 @@ class ColormapGenerator(QWidget):
         # ------------------------------------------------------------------
         # State tracking
         # ------------------------------------------------------------------
+        # Stores the state of the currently loaded preset for 'dirty' checking
         self._clean_state: Dict[str, Any] = {"colors": [], "mode": "strict"}
 
         # Engine that does the colour math
@@ -345,7 +412,7 @@ class ColormapGenerator(QWidget):
         # ------------------------------------------------------------------
         if current_cmap_name not in self.all_presets:
             current_cmap_name = "Viridis"  # Fallback to default
-        
+
         self._current_preset_name = current_cmap_name
 
         # CRITICAL FIX: Populate the list BEFORE trying to set the text
@@ -355,7 +422,7 @@ class ColormapGenerator(QWidget):
         QTimer.singleShot(10, lambda: self.load_selected_preset(current_cmap_name))
 
     def _setup_ui(self) -> None:
-        """Builds the widget layout."""
+        """Builds the main widget layout, consisting of a control panel and a visualizer."""
         main_h_layout = QHBoxLayout()
         main_h_layout.setContentsMargins(10, 10, 10, 10)
         main_h_layout.setSpacing(10)
@@ -364,17 +431,17 @@ class ColormapGenerator(QWidget):
         left_panel.setFixedWidth(360)
         left_layout = QVBoxLayout()
         left_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         # 1. Preset Manager
         group_presets = QGroupBox("Preset Manager")
         group_presets.setStyleSheet(self.GROUPBOX_STYLE)
         layout_presets = QVBoxLayout()
-        
+
         self.combo_presets = QComboBox()
         self.combo_presets.setStyleSheet(self.COMBO_STYLE)
         self.combo_presets.currentTextChanged.connect(self.load_selected_preset)
         layout_presets.addWidget(self.combo_presets)
-        
+
         h_preset_btns = QHBoxLayout()
         self.input_preset_name = QLineEdit()
         self.input_preset_name.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -385,31 +452,31 @@ class ColormapGenerator(QWidget):
                 border: 1px solid #cccccc;
                 border-radius: 8px;
             }
-        """)      
+        """)
 
         self.btn_save_preset = self._make_btn(" Save", "Saves custom preset", ICON_DICT.get("save2"))
         self.btn_save_preset.clicked.connect(self.save_current_as_preset)
-        
+
         self.btn_del_preset = self._make_btn(" Delete", "Removes custom preset", ICON_DICT.get("delete"))
         self.btn_del_preset.clicked.connect(self.delete_selected_preset)
-        
+
         h_preset_btns.addWidget(self.input_preset_name)
         h_preset_btns.addWidget(self.btn_save_preset)
         h_preset_btns.addWidget(self.btn_del_preset)
         layout_presets.addLayout(h_preset_btns)
         group_presets.setLayout(layout_presets)
-        
+
         left_layout.addWidget(group_presets)
 
         # 2. Mode Selection
         group_modes = QGroupBox("Interpolation Mode")
         group_modes.setStyleSheet(self.GROUPBOX_STYLE)
         layout_modes = QVBoxLayout()
-        
+
         self.radio_strict = QRadioButton("Strict (Use exact colors)")
         self.radio_balanced = QRadioButton("Balanced (50% Mix)")
         self.radio_luma = QRadioButton("Luminosity (Linearize Lightness)")
-        
+
         self.radio_strict.setChecked(True)
         self.radio_balanced.setToolTip("Averages your chosen brightness with a perfectly linear gradient.")
 
@@ -417,70 +484,81 @@ class ColormapGenerator(QWidget):
         self.btn_group_modes.addButton(self.radio_strict)
         self.btn_group_modes.addButton(self.radio_balanced)
         self.btn_group_modes.addButton(self.radio_luma)
-        
+
         self.btn_group_modes.buttonToggled.connect(self._on_mode_changed)
 
         layout_modes.addWidget(self.radio_strict)
         layout_modes.addWidget(self.radio_balanced)
         layout_modes.addWidget(self.radio_luma)
         group_modes.setLayout(layout_modes)
-        
+
         left_layout.addWidget(group_modes)
-        
+
         # 3. Color List
         group_colors = QGroupBox("Gradient Colors")
         group_colors.setStyleSheet(self.GROUPBOX_STYLE)
         layout_colors = QVBoxLayout()
-        
+
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        
+
         self.color_list_widget = QWidget()
         self.color_list_layout = QVBoxLayout()
         self.color_list_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.color_list_layout.setContentsMargins(0, 0, 0, 0)
         self.color_list_widget.setLayout(self.color_list_layout)
-        
+
         self.scroll_area.setWidget(self.color_list_widget)
         layout_colors.addWidget(self.scroll_area)
-        
+
         action_layout = QHBoxLayout()
         self.btn_pick_screen = self._make_btn(" Color Wheel", "Get harmonic colors", ICON_DICT.get("color_wheel"))
         self.btn_pick_screen.clicked.connect(self.open_harmony_generator)
 
         self.btn_invert = self._make_btn(" Reverse", "Reverse order", ICON_DICT.get("reverse"))
         self.btn_invert.clicked.connect(self.reverse_colors)
-        
+
         action_layout.addWidget(self.btn_pick_screen)
         action_layout.addWidget(self.btn_invert)
         layout_colors.addLayout(action_layout)
-        
+
         group_colors.setLayout(layout_colors)
         left_layout.addWidget(group_colors)
 
         left_panel.setLayout(left_layout)
-        
+
         # --- Right Panel (Visualizer) ---
         group_visualizer = QGroupBox("Generated Colormap")
         group_visualizer.setStyleSheet(self.GROUPBOX_STYLE)
         group_visualizer_layout = QVBoxLayout()
-        group_visualizer_layout.setContentsMargins(10, 10, 10, 10) 
+        group_visualizer_layout.setContentsMargins(10, 10, 10, 10)
         group_visualizer_layout.setSpacing(5)
-        
-        self.image_label = RoundedGradientWidget() # Assuming radius logic handled internally or via property
+
+        # Assuming radius logic handled internally or via property
+        self.image_label = RoundedGradientWidget()
         self.image_label.setMinimumHeight(100)
-        
+
         group_visualizer_layout.addWidget(self.image_label, 1)
-        
+
         group_visualizer.setLayout(group_visualizer_layout)
-        
+
         main_h_layout.addWidget(left_panel)
         main_h_layout.addWidget(group_visualizer, 1)
         self.setLayout(main_h_layout)
 
     def _make_btn(self, text: str, tooltip: str, icon_path: Optional[str]) -> QPushButton:
-        """Helper to create standardized buttons."""
+        """
+        Helper to create standardized buttons with pre-applied styling.
+
+        Args:
+            text (str): The text displayed on the button.
+            tooltip (str): The tooltip text.
+            icon_path (Optional[str]): Path to the icon image.
+
+        Returns:
+            QPushButton: The standardized button instance.
+        """
         btn = QPushButton()
         btn.setText(text)
         if icon_path:
@@ -490,7 +568,8 @@ class ColormapGenerator(QWidget):
         btn.setStyleSheet(self.BUTTON_STYLE)
         return btn
 
-    def _on_mode_changed(self, button, checked):
+    def _on_mode_changed(self, button: QRadioButton, checked: bool) -> None:
+        """Triggers colormap generation when an interpolation mode radio button is toggled."""
         if checked:
             self.generate_colormap()
 
@@ -498,25 +577,22 @@ class ColormapGenerator(QWidget):
 
     def refresh_preset_list(self, select_item: Optional[str] = None) -> None:
         """
-        Refreshes the combobox items with safety against signal loops.
-        
-        Args:
-            select_item: If provided, this item will be selected after refresh. 
-                         If None, tries to keep current selection.
-        """
-        # 1. Determine target selection
+        Rebuilds the contents of the preset combobox, including separators for custom presets.
 
-            
-        # 2. Rebuild list safely
+        Args:
+            select_item (Optional[str]): The item name to select after refresh. If None,
+                it defaults to the first item.
+        """
+        # 1. Rebuild list safely
         self.combo_presets.blockSignals(True)
 
         self.combo_presets.clear()
-        
+
         all_presets_keys = sorted(self.colormap_presets.keys())
         custom_keys = sorted(self.custom_presets.keys())
-        
+
         self.combo_presets.addItems(all_presets_keys)
-        
+
         if custom_keys:
             # Add separator at the current end of the list
             self.combo_presets.insertSeparator(self.combo_presets.count())
@@ -536,18 +612,22 @@ class ColormapGenerator(QWidget):
             # Fallback: select 0 if exists
             if self.combo_presets.count() > 0:
                 self.combo_presets.setCurrentIndex(0)
-                    
+
         # 4. Manually trigger load because we blocked signals
-        #    Only do this if the selection actually warrants a load
         current_text = self.combo_presets.currentText()
         if current_text:
             self.load_selected_preset(current_text)
 
     def load_selected_preset(self, preset_name: str) -> None:
-        """Loads the preset data into the UI."""
+        """
+        Loads the color points and interpolation mode from a selected preset into the UI.
+
+        Args:
+            preset_name (str): The name of the preset to load.
+        """
         if not preset_name or preset_name.startswith("---"):
             return
-        
+
         # 1. Retrieve Data
         if preset_name in self.colormap_presets:
             data = self.colormap_presets[preset_name]
@@ -567,7 +647,7 @@ class ColormapGenerator(QWidget):
 
         # 3. Update UI (Block signals to prevent intermediate dirty checks)
         self.color_list_widget.setUpdatesEnabled(False)
-        self.blockSignals(True) 
+        self.blockSignals(True)
         try:
             mode = self._clean_state["mode"]
             if mode == "luma": self.radio_luma.setChecked(True)
@@ -578,23 +658,24 @@ class ColormapGenerator(QWidget):
                 row = self.color_rows.pop()
                 self.color_list_layout.removeWidget(row)
                 row.deleteLater()
-            
+
             for hex_c in self._clean_state["colors"]:
                 self.add_color_point_internal(QColor(hex_c))
-        finally:    
+        finally:
             self.blockSignals(False)
-        
+
         self.update_ui_state()
         self.color_list_widget.setUpdatesEnabled(True)
-        
+
         # 4. Generate visual and VALIDATE
         QTimer.singleShot(10, self.generate_colormap)
         # Explicitly valid since we just loaded
-        self.validityChanged.emit(True) 
+        self.validityChanged.emit(True)
 
     def save_current_as_preset(self) -> None:
+        """Saves the current gradient configuration as a new custom preset."""
         name = self.input_preset_name.text().strip()
-        if not name or name in self.colormap_presets: 
+        if not name or name in self.colormap_presets:
             QMessageBox.warning(self, "Invalid Name", "Preset name cannot be empty or match a default preset.")
             return
 
@@ -603,26 +684,27 @@ class ColormapGenerator(QWidget):
         if self.radio_luma.isChecked(): mode = "luma"
         elif self.radio_balanced.isChecked(): mode = "balanced"
         else: mode = "strict"
-        
+
         # 2. Save to dict and file
         self.custom_presets[name] = {"colors": colors, "mode": mode}
         self.cmap_manager.custom_presets = self.custom_presets
         err = self.cmap_manager.save_custom_presets_to_file()
         if err: QMessageBox.critical(self, "Error", f"Save failed: {err}")
-        
+
         # 3. Update UI cleanly
         self.input_preset_name.clear()
-        
+
         # 4. Refresh List AND Select New Item
         self.refresh_preset_list(select_item=name)
-        
+
     def delete_selected_preset(self) -> None:
+        """Deletes the currently selected custom preset."""
         name = self.combo_presets.currentText()
         if name in self.custom_presets:
             reply = QMessageBox.question(
                 self, 'Confirm Delete',
                 f"Are you sure you want to delete '{name}'?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No
             )
             if reply == QMessageBox.StandardButton.Yes:
@@ -630,7 +712,7 @@ class ColormapGenerator(QWidget):
                 del self.custom_presets[name]
                 self.cmap_manager.custom_presets = self.custom_presets
                 self.cmap_manager.save_custom_presets_to_file()
-                
+
                 # 2. Refresh (Defaults to index 0 if name not found)
                 self.refresh_preset_list(select_item=None)
 
@@ -638,14 +720,16 @@ class ColormapGenerator(QWidget):
 
     def check_dirty_state(self) -> None:
         """
-        CRITICAL: Compares current UI state with the last loaded 'clean' state.
-        Disables OK button if different.
+        Compares the current UI state with the last loaded 'clean' state.
+
+        Emits `validityChanged(True)` if the state is clean (matches the loaded preset)
+        and `validityChanged(False)` otherwise.
         """
         if self.signalsBlocked(): return
 
         # 1. Get Current UI State
         current_colors = [row.color().name() for row in self.color_rows]
-        
+
         current_mode = "strict"
         if self.radio_balanced.isChecked(): current_mode = "balanced"
         elif self.radio_luma.isChecked(): current_mode = "luma"
@@ -655,78 +739,92 @@ class ColormapGenerator(QWidget):
         clean_mode = self._clean_state.get("mode", "strict")
 
         is_clean = (current_colors == clean_colors) and (current_mode == clean_mode)
-        
+
         # 3. Emit Result
         self.validityChanged.emit(is_clean)
 
     def open_harmony_generator(self) -> None:
+        """Opens a dialog to generate a new list of harmonizing colors based on a seed color."""
         seed_color = QColor(128, 128, 128)
         if self.color_rows:
             seed_color = self.color_rows[0].color()
-        
+
         # Determine valid start rule (fallback if previous was "Single")
         start_rule = self.color_rule
         if not start_rule or start_rule == "Single":
             start_rule = "Complementary"
 
         dlg = ColorGeneratorDialog(
-            parent=self, 
-            seed_color=seed_color.name(), 
-            color_rule=start_rule, 
+            parent=self,
+            seed_color=seed_color.name(),
+            color_rule=start_rule,
             icon=ICON_DICT.get("color_wheel"),
             excluded_rules=["Single"]  # NEW: Remove Single option from harmonies
         )
-        
+
         if dlg.exec() == QDialog.DialogCode.Accepted:
             new_colors, color_rule = dlg.get_colors()
             if not new_colors: return
-                
+
             self.blockSignals(True)
             self.color_list_widget.setUpdatesEnabled(False)
-            
+
             self.color_rule = color_rule
-            
+
             while self.color_rows:
                 row = self.color_rows.pop()
                 self.color_list_layout.removeWidget(row)
                 row.deleteLater()
-            
+
             for c in new_colors:
                 self.add_color_point_internal(c)
-                
+
             self.blockSignals(False)
             self.update_ui_state()
             self.color_list_widget.setUpdatesEnabled(True)
             self.generate_colormap()
 
     def add_color_point(self, color: Union[QColor, bool] = None) -> None:
-        if not isinstance(color, QColor) or not color.isValid(): 
+        """
+        Adds a new color point row to the list with a default or specified color.
+
+        Args:
+            color (Union[QColor, bool], optional): The color to add. Defaults to gray if None or invalid.
+        """
+        if not isinstance(color, QColor) or not color.isValid():
             color = QColor(128, 128, 128)
-        
+
         if len(self.color_rows) >= 10:
             return
-            
+
         self.add_color_point_internal(color)
-        
+
         if not self.signalsBlocked():
             self.update_ui_state()
             self.generate_colormap()
 
     def add_color_point_internal(self, color: QColor) -> None:
+        """
+        Creates and connects a new ColorRow, then adds it to the layout.
+
+        Args:
+            color (QColor): The color for the new row.
+        """
         row = ColorRow(color)
         row.colorChanged.connect(self.generate_colormap)
         row.removeRequested.connect(self.remove_color_point)
         row.insertRequested.connect(self.insert_color_point)
-        
+
         self.color_rows.append(row)
         self.color_list_layout.addWidget(row)
 
     def insert_color_point(self, target_row: ColorRow) -> None:
+        """Inserts a new color row immediately after the target row."""
         if len(self.color_rows) >= 10: return
         try:
             idx = self.color_rows.index(target_row)
         except ValueError:
-            return 
+            return
 
         new_row = ColorRow(target_row.color())
         new_row.colorChanged.connect(self.generate_colormap)
@@ -741,6 +839,7 @@ class ColormapGenerator(QWidget):
         self.generate_colormap()
 
     def remove_color_point(self, row: ColorRow) -> None:
+        """Removes the specified color row from the list."""
         if len(self.color_rows) <= 2: return
         self.color_list_layout.removeWidget(row)
         row.deleteLater()
@@ -749,6 +848,7 @@ class ColormapGenerator(QWidget):
         self.generate_colormap()
 
     def reverse_colors(self) -> None:
+        """Reverses the order of the colors in the gradient list."""
         if len(self.color_rows) < 2: return
         self.color_rows.reverse()
         self.color_list_widget.setUpdatesEnabled(False)
@@ -758,50 +858,55 @@ class ColormapGenerator(QWidget):
         self.generate_colormap()
 
     def update_ui_state(self) -> None:
+        """Updates UI elements based on the number of color points (e.g., disables remove if only 2 colors remain)."""
         can_remove = len(self.color_rows) > 2
         for row in self.color_rows:
             row.set_remove_enabled(can_remove)
 
     def generate_colormap(self) -> None:
-        """Generates gradient AND checks if state is dirty."""
+        """Generates the gradient using the Oklab engine and updates the visualizer."""
         if self.signalsBlocked(): return
 
         # 1. Generate Gradient
         if len(self.color_rows) < 2:
             self.image_label.set_gradient(None)
             return
-            
+
         colors = [row.color().name() for row in self.color_rows]
-        
+
         mode = "strict"
         if self.radio_balanced.isChecked(): mode = "balanced"
         elif self.radio_luma.isChecked(): mode = "luma"
-        
+
         try:
             # Assuming this returns a numpy array or similar
             rgb_array = self.cmap_engine.generate_gradient(
                 colors=colors,
                 mode=mode,
-                n_steps=1024 
+                n_steps=1024
             )
             # Convert to pixmap for display
             raw_pixmap = numpy_to_qpixmap(rgb_array, height=1)
             self.image_label.set_gradient(raw_pixmap)
-            
+
         except ValueError:
             self.image_label.set_gradient(None)
 
         # 2. CRITICAL: Check Dirty State
-        #    This is called every time a color changes or a mode toggles
         self.check_dirty_state()
 
     def get_cmaps(self) -> Dict[str, Any]:
-        """Returns the current mapping state."""
+        """
+        Returns the combined dictionary of all colormap data, including presets and active name.
+
+        Returns:
+            Dict[str, Any]: A dictionary containing 'active', 'names', and 'cmaps' keys.
+        """
         all_presets = {**self.custom_presets, **self.colormap_presets}
         cmap_dict = self.cmap_manager.return_cmaps(all_presets)
-        
+
         all_preset_names = (sorted(self.colormap_presets.keys()) + sorted(self.custom_presets.keys()))
-        
+
         return {
             "active": self._current_preset_name,
             "names": all_preset_names,
@@ -809,7 +914,11 @@ class ColormapGenerator(QWidget):
         }
 
 class ColorMapDialog(QDialog):
-    
+    """
+    A dialog wrapper for the ColormapGenerator widget, providing OK/Cancel buttons
+    and handling the 'dirty' state to conditionally enable the OK button.
+    """
+
     BUTTON_STYLE = """
         QDialogButtonBox { dialogbuttonbox-buttons-have-icons: 0; }
         QPushButton {
@@ -823,6 +932,14 @@ class ColorMapDialog(QDialog):
     """
 
     def __init__(self, parent=None, current_cmap_name='Viridis', icon_path=None):
+        """
+        Initializes the ColorMapDialog.
+
+        Args:
+            parent (Optional[QWidget]): The parent widget for the dialog.
+            current_cmap_name (str): The name of the preset to load initially in the generator.
+            icon_path (Optional[str]): Path to the dialog window icon.
+        """
         super().__init__(parent)
         self.setWindowTitle("Colormap Generator")
         self.resize(1040, 650)
@@ -842,26 +959,27 @@ class ColorMapDialog(QDialog):
 
         button_container = QWidget()
         button_container.setStyleSheet("background-color: #282828; border-top: 1px solid #444;")
-        button_layout = QHBoxLayout() 
+        button_layout = QHBoxLayout()
         button_layout.setContentsMargins(15, 15, 15, 15)
-        
+
         self._buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self._buttons.setStyleSheet(self.BUTTON_STYLE)
         self._ok_button = self._buttons.button(QDialogButtonBox.Ok)
-        
+
         self._buttons.accepted.connect(self.accept)
         self._buttons.rejected.connect(self.reject)
-        
+
         button_layout.addStretch()
         button_layout.addWidget(self._buttons)
         button_container.setLayout(button_layout)
-        
+
         layout.addWidget(button_container)
-        
+
         # Initial Check
         self._on_validity_changed(True)
 
-    def _on_validity_changed(self, is_valid: bool):
+    def _on_validity_changed(self, is_valid: bool) -> None:
+        """Handles the 'validity' signal from the generator, enabling or disabling the OK button."""
         if self._ok_button:
             self._ok_button.setEnabled(is_valid)
             if is_valid:
@@ -871,6 +989,12 @@ class ColorMapDialog(QDialog):
 
 
     def get_cmaps(self) -> dict:
+        """
+        Retrieves the colormap data from the internal generator tool.
+
+        Returns:
+            dict: The dictionary containing 'active', 'names', and 'cmaps'.
+        """
         if hasattr(self, '_tool'):
             return self._tool.get_cmaps()
         return {}
@@ -879,6 +1003,12 @@ class ColorMapDialog(QDialog):
     def get_colormaps(parent=None, current_cmap_name="Viridis", icon_path=None) -> dict:
         """
         Static helper to run the dialog and return the full result dict.
+
+        Args:
+            parent (Optional[QWidget]): The parent widget for the dialog.
+            current_cmap_name (str): The name of the preset to load initially.
+            icon_path (Optional[str]): Path to the dialog window icon.
+
         Returns:
             dict: The colormap data (containing 'active', 'names', 'cmaps') if accepted, else empty dict.
         """
@@ -891,7 +1021,7 @@ class ColorMapDialog(QDialog):
 if __name__ == "__main__":
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyle("Fusion")
-    
+
     dlg = ColorMapDialog(current_cmap_name="Turbo")
     if dlg.exec() == QDialog.DialogCode.Accepted:
         print("Selected:", dlg.get_cmaps()['active'])

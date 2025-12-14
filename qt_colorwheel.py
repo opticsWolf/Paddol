@@ -21,17 +21,32 @@ from qt_colorpipette import PixelColorPicker
 
 # --- UI Components ---
 class ClickableLabel(QLabel):
-    """A QLabel that copies its text to clipboard on double click."""
+    """A QLabel that copies its text to the clipboard on double click."""
     def mouseDoubleClickEvent(self, event):
+        """Copies the label's text to clipboard.
+
+        Args:
+            event (QMouseEvent): The mouse event.
+        """
         clipboard = QGuiApplication.clipboard()
         clipboard.setText(self.text())
         print(f"Copied to clipboard: {self.text()}")
 
 class GradientSlider(QWidget):
-    """A slider with a gradient background representing Saturation or Brightness."""
+    """A slider widget with a gradient background representing Saturation or Brightness.
+
+    This widget displays a visual gradient and allows the user to interactively
+    adjust a color property (Saturation or Brightness).
+    """
     valueChanged = Signal(int)
 
     def __init__(self, mode='saturation'):
+        """Initializes the GradientSlider.
+
+        Args:
+            mode (str): Determines the color channel the slider represents:
+                'saturation' or 'brightness'. Defaults to 'saturation'.
+        """
         super().__init__()
         self.mode = mode
         self.value = 255
@@ -42,7 +57,13 @@ class GradientSlider(QWidget):
         self._is_dragging = False
 
     def setValue(self, val: int, block_signals: bool = False):
-        """Sets the slider value programmatically with bounds checking."""
+        """Sets the slider value programmatically with bounds checking.
+
+        Args:
+            val (int): The value to set (0-255).
+            block_signals (bool): If True, prevents emitting the valueChanged signal.
+                Defaults to False.
+        """
         val = max(0, min(255, val))
         if self.value == val:
             return
@@ -53,16 +74,24 @@ class GradientSlider(QWidget):
         self.update()  # Force repaint
 
     def set_color_state(self, h, s, v):
+        """Updates the color state and regenerates the gradient texture.
+
+        Args:
+            h (float): Hue value (0.0-1.0).
+            s (float): Saturation value (0.0-1.0).
+            v (float): Value/Brightness (0.0-1.0).
+        """
         self._hue, self._sat, self._val = h, s, v
         self._generate_texture()
         self.update()
 
     def _generate_texture(self):
+        """Generates a texture with a color gradient based on the current color state."""
         w = max(256, self.width())
         steps = np.linspace(0, 1, w)
         if self.mode == 'saturation':
             r, g, b = ColorMath.hsv_to_rgb_vectorized(self._hue, steps, self._val)
-        else: 
+        else:  
             r, g, b = ColorMath.hsv_to_rgb_vectorized(self._hue, self._sat, steps)
         rgba = np.zeros((1, w, 4), dtype=np.uint8)
         rgba[0, :, 0], rgba[0, :, 1], rgba[0, :, 2], rgba[0, :, 3] = r, g, b, 255
@@ -70,6 +99,11 @@ class GradientSlider(QWidget):
         self._pixmap = QPixmap.fromImage(img.copy())
 
     def _update_value_from_pos(self, x):
+        """Updates the slider value based on the given mouse position.
+
+        Args:
+            x (float): The x-coordinate of the mouse position.
+        """
         padding = self.height() // 2
         eff_w = self.width() - 2 * padding
         if eff_w <= 0: return
@@ -78,17 +112,25 @@ class GradientSlider(QWidget):
         self.setValue(val)
 
     def mousePressEvent(self, e: QMouseEvent):
+        """Starts dragging the slider handle."""
         if e.button() == Qt.MouseButton.LeftButton:
             self._is_dragging = True
             self._update_value_from_pos(e.position().x())
 
     def mouseMoveEvent(self, e: QMouseEvent):
+        """Updates the slider value while dragging."""
         if self._is_dragging: self._update_value_from_pos(e.position().x())
 
-    def mouseReleaseEvent(self, e: QMouseEvent): self._is_dragging = False
+    def mouseReleaseEvent(self, e: QMouseEvent):  
+        """Stops dragging the slider handle."""
+        self._is_dragging = False
 
     def wheelEvent(self, e: QWheelEvent):
-        """Handle mouse wheel events to increment/decrement value."""
+        """Handles mouse wheel events to increment/decrement the value.
+
+        Args:
+            e (QWheelEvent): The wheel event containing scroll information.
+        """
         delta = e.angleDelta().y()
         if delta == 0:
             return
@@ -98,10 +140,12 @@ class GradientSlider(QWidget):
         e.accept()
     
     def resizeEvent(self, e):
+        """Handles resize events to regenerate the texture."""
         self._generate_texture()
         super().resizeEvent(e)
 
     def paintEvent(self, e):
+        """Paints the slider with the gradient background and handle."""
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         h, w = self.height(), self.width()
@@ -135,19 +179,19 @@ class GradientSlider(QWidget):
         handle_radius = 7 
         
         p.setBrush(handle_color)
-        p.setPen(QPen(border_color, 2)) 
+        p.setPen(QPen(border_color, 2))  
         p.drawEllipse(center, handle_radius, handle_radius)
 
 class ColorCard(QWidget):
-    """
-    Displays color swatch and values. 
-    Clicking sets it as active color.
-    Double clicking swatch copies ALL data.
-    Double clicking text copies SPECIFIC data.
+    """Displays a color swatch and its numerical values (HEX, RGB, HSV).
+
+    Provides interactive features: clicking sets the color as active, and
+    double-clicking copies data to the clipboard.
     """
     clicked = Signal(float)  # Emits hue when clicked
 
     def __init__(self):
+        """Initializes the ColorCard with default styling and layout."""
         super().__init__()
         self.setFixedWidth(110)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -163,7 +207,7 @@ class ColorCard(QWidget):
         self.swatch.paintEvent = self._paint_swatch
         self.swatch.mouseDoubleClickEvent = self._copy_all_data
         # Forward mouse press from swatch to card
-        self.swatch.mousePressEvent = self.mousePressEvent 
+        self.swatch.mousePressEvent = self.mousePressEvent  
         
         # Data
         self._color = QColor(100, 100, 100)
@@ -190,6 +234,16 @@ class ColorCard(QWidget):
         layout.addWidget(self.lbl_hsv)
 
     def set_data(self, c: QColor, h, s, v, is_primary=False):
+        """Sets the color data and updates the visual representation.
+
+        Args:
+            c (QColor): The color to display.
+            h (float): Hue value (0.0-1.0).
+            s (float): Saturation value (0.0-1.0).
+            v (float): Value/Brightness (0.0-1.0).
+            is_primary (bool): Whether this card represents the primary color.
+                Defaults to False.
+        """
         self._color = c
         self._hue_val = h
         self._is_primary = is_primary
@@ -206,11 +260,13 @@ class ColorCard(QWidget):
         self.swatch.update()
 
     def mousePressEvent(self, event: QMouseEvent):
+        """Emits the color's hue value when clicked."""
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit(self._hue_val)
             super().mousePressEvent(event)
 
     def _paint_swatch(self, event):
+        """Paints the color swatch with appropriate styling and primary indicator."""
         p = QPainter(self.swatch)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         
@@ -235,15 +291,27 @@ class ColorCard(QWidget):
             p.drawRoundedRect(r.adjusted(-6, -6, 6, 6), 16, 16)
 
     def _copy_all_data(self, event):
-        """Copies full data packet."""
+        """Copies the full color data (HEX, RGB, HSV) to the clipboard."""
         data = f"HEX: {self.hex_str}\nRGB: {self.rgb_str}\nHSV: {self.hsv_str}"
         QGuiApplication.clipboard().setText(data)
         print("All color data copied!")
 
 class ColorWheelWidget(QWidget):
+    """A circular color wheel widget for selecting hues and displaying harmonies.
+
+    This widget uses highly optimized NumPy operations and caching to render a
+    smooth color wheel texture and interactive markers.
+    """
     hueChanged = Signal(float)
 
     def __init__(self, size: int = 400, thickness_pct: float = 0.40):
+        """Initializes the ColorWheelWidget.
+
+        Args:
+            size (int): The diameter of the color wheel in pixels. Defaults to 400.
+            thickness_pct (float): The thickness of the wheel as a percentage
+                of its radius (0.0-1.0). Defaults to 0.40.
+        """
         super().__init__()
         self.wheel_size = size
         self.thickness_pct = thickness_pct
@@ -269,6 +337,12 @@ class ColorWheelWidget(QWidget):
         self._update_render()
 
     def set_saturation_brightness(self, sat, bri):
+        """Updates the saturation and brightness values and triggers a repaint.
+
+        Args:
+            sat (float): Saturation value (0.0-1.0).
+            bri (float): Brightness value (0.0-1.0).
+        """
         # Only trigger repaint if values actually change
         if self._saturation != sat or self._brightness != bri:
             self._saturation = sat
@@ -276,14 +350,29 @@ class ColorWheelWidget(QWidget):
             self._update_render() # Uses cached geometry, only updates color LUT
 
     def set_harmony_hues(self, hues):
+        """Sets the harmony hues to be displayed as markers on the wheel.
+
+        Args:
+            hues (list): List of hue values (0.0-1.0) for harmonic colors.
+        """
         self._harmony_hues = hues
         self.update()
 
     def set_hue(self, hue):
+        """Sets the current primary hue value and updates the widget.
+
+        Args:
+            hue (float): Hue value (0.0-1.0).
+        """
         self._hue = hue % 1.0
         self.update()
 
     def _update_hue_from_mouse(self, pos: QPointF):
+        """Calculates and sets the hue based on the mouse position relative to the center.
+
+        Args:
+            pos (QPointF): The mouse position.
+        """
         dx = pos.x() - self.width() / 2
         dy = pos.y() - self.height() / 2
         hue = (np.arctan2(dy, dx) + np.pi / 2) / (2 * np.pi)
@@ -292,25 +381,35 @@ class ColorWheelWidget(QWidget):
         self.update()
 
     def mousePressEvent(self, e):
+        """Starts dragging the primary hue marker."""
         if e.button() == Qt.MouseButton.LeftButton:
             self._is_dragging = True
             self._update_hue_from_mouse(e.position())
 
     def mouseMoveEvent(self, e):
+        """Updates the primary hue while dragging."""
         if self._is_dragging: self._update_hue_from_mouse(e.position())
 
-    def mouseReleaseEvent(self, e): self._is_dragging = False
+    def mouseReleaseEvent(self, e):
+        """Stops dragging the primary hue marker."""
+        self._is_dragging = False
 
     def wheelEvent(self, e: QWheelEvent):
+        """Handles mouse wheel events to finely adjust the hue.
+
+        Args:
+            e (QWheelEvent): The wheel event.
+        """
         delta = e.angleDelta().y()
         if delta == 0: return
-        hue_shift = (delta * 0.75) / 129600 
+        hue_shift = (delta * 0.75) / 129600  
         self._hue = (self._hue + hue_shift) % 1.0
         self.hueChanged.emit(self._hue)
         self.update()
         e.accept()
 
     def resizeEvent(self, e):
+        """Handles resize events to update the wheel's geometry cache."""
         side = min(self.width(), self.height())
         if side != self.wheel_size:
             self.wheel_size = side
@@ -319,9 +418,9 @@ class ColorWheelWidget(QWidget):
         super().resizeEvent(e)
 
     def _ensure_geometry_cache(self):
-        """
-        Expensive Step: Calculates angles and distances.
-        Only runs when widget is resized.
+        """Calculates and caches the angle and distance (geometry) for each pixel.
+
+        This allows for fast color updates without recalculating the wheel shape.
         """
         if self._cache_valid and self._cached_indices is not None:
             return
@@ -339,7 +438,6 @@ class ColorWheelWidget(QWidget):
         self._cached_alpha = (mask_bool * 255).astype(np.uint8)
         
         # 3. Hue Calculation -> LUT Indices (Geometry)
-        # Convert angle (-pi to pi) to normalized hue (0.0 to 1.0)
         hue_grid = ((np.arctan2(y, x) + np.pi / 2) / (2 * np.pi)) % 1.0
         
         # Map float hue 0.0-1.0 to int indices 0-1023
@@ -348,16 +446,15 @@ class ColorWheelWidget(QWidget):
         self._cache_valid = True
 
     def _update_render(self):
-        """
-        Fast Step: Generates color LUT and maps it to cached geometry.
-        Runs on S/B change or Resize.
+        """Generates a color lookup table (LUT) and applies it to the cached geometry.
+
+        This efficiently updates the wheel's color based on the current saturation and brightness.
         """
         self._ensure_geometry_cache()
         
         size = self._cached_indices.shape[0]
         
         # 1. Generate Look-Up Table (LUT)
-        # Only calculate HSV->RGB for 'lut_size' (1024) pixels, not 'size*size' (250k+)
         lut_hues = np.linspace(0, 1, self._lut_size)
         r, g, b = ColorMath.hsv_to_rgb_vectorized(lut_hues, self._saturation, self._brightness)
         
@@ -365,11 +462,9 @@ class ColorWheelWidget(QWidget):
         lut_rgb = np.column_stack((r, g, b)).astype(np.uint8)
         
         # 2. Apply LUT to Indices (Advanced Numpy Indexing)
-        # This replaces the pixels with the looked-up RGB values
         rgb_grid = lut_rgb[self._cached_indices]
         
         # 3. Buffer Packing
-        # We need (H, W, 4). We have (H, W, 3) in rgb_grid and (H, W) in alpha
         rgba = np.empty((size, size, 4), dtype=np.uint8)
         rgba[..., :3] = rgb_grid
         rgba[..., 3] = self._cached_alpha
@@ -380,6 +475,7 @@ class ColorWheelWidget(QWidget):
         self.update()
 
     def paintEvent(self, e):
+        """Paints the cached color wheel and the primary/harmony hue markers."""
         if not self._pixmap: return
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -422,17 +518,17 @@ class ColorWheelWidget(QWidget):
 # --- Main Window ---
 
 class ColorWheelTool(QWidget):
-    """
-    A comprehensive tool for selecting colors and generating harmonic palettes.
+    """A comprehensive widget for selecting colors and generating harmonic palettes.
     
-    Supports both vertical and horizontal layouts.
+    This tool integrates the color wheel, saturation/brightness sliders, and
+    a harmony rule selector to create and display a color palette.
     """
 
     GROUPBOX_STYLE = """
         QGroupBox {
             border: 1px solid #444;
             border-radius: 10px;
-            margin-top: 10px; 
+            margin-top: 10px;  
             padding: 4px;
             padding-top: 8px;
             font-weight: bold;
@@ -442,8 +538,8 @@ class ColorWheelTool(QWidget):
             subcontrol-origin: margin;
             subcontrol-position: top left;
             padding: 0 5px;
-            left: 10px; 
-            background-color: #282828; 
+            left: 10px;  
+            background-color: #282828;  
         }
     """
 
@@ -485,15 +581,15 @@ class ColorWheelTool(QWidget):
             font-weight: bold;
             font-size: 16px; /* Larger font for the symbol */
         }
-        QPushButton:hover { 
-            background-color: #444; 
+        QPushButton:hover {  
+            background-color: #444;  
             color: white;
-            border: 1px solid #666; 
+            border: 1px solid #666;  
         }
-        QPushButton:pressed { 
-            background-color: #222; 
-            border: 1px solid #3daee9; 
-            color: #3daee9; 
+        QPushButton:pressed {  
+            background-color: #222;  
+            border: 1px solid #3daee9;  
+            color: #3daee9;  
         }
     """
     
@@ -501,18 +597,17 @@ class ColorWheelTool(QWidget):
                  seed_color: Optional[str] = None, 
                  color_rule: str = "Complementary", 
                  orientation: str = "horizontal",
-                 allowed_rules: Optional[List[str]] = None,  # NEW
-                 excluded_rules: Optional[List[str]] = None  # NEW
+                 allowed_rules: Optional[List[str]] = None, 
+                 excluded_rules: Optional[List[str]] = None
                  ):
-        """
-        Initialize the Color Picker Tool.
+        """Initializes the Color Picker Tool.
 
         Args:
             seed_color (str, optional): Hex code or name to initialize the color state.
             color_rule (str): The initial harmony rule to apply.
             orientation (str): Layout mode, either "vertical" or "horizontal".
-            allowed_rules (List[str]): If provided, only these rules will appear.
-            excluded_rules (List[str]): If provided, these rules will be hidden.
+            allowed_rules (List[str], optional): If provided, only these rules will appear.
+            excluded_rules (List[str], optional): If provided, these rules will be hidden.
         """
         super().__init__()
         self.hue, self.sat, self.bri = 0.0, 1.0, 1.0
@@ -526,14 +621,14 @@ class ColorWheelTool(QWidget):
             c = QColor(seed_color)
             if c.isValid():
                 self.hue = c.hueF()
-                if self.hue < 0: self.hue = 0.0 
+                if self.hue < 0: self.hue = 0.0  
                 self.sat = c.saturationF()
                 self.bri = c.valueF()
 
         self.init_ui()
 
     def init_ui(self):
-        """Builds the UI elements based on the specified orientation."""
+        """Builds the UI elements and sets up the layout based on orientation."""
         
         # 1. Create the Main Layout based on orientation
         if self.orientation == "horizontal":
@@ -544,34 +639,28 @@ class ColorWheelTool(QWidget):
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(12, 12, 12, 12)
 
-        # --- Section 1: Color Wheel (Now wrapped in GroupBox) ---
+        # --- Section 1: Color Wheel ---
         self.group_wheel = QGroupBox("Color Wheel")
         self.group_wheel.setStyleSheet(self.GROUPBOX_STYLE)
         
-        # Use QGridLayout to allow overlay/corner positioning of the button
         wheel_layout = QGridLayout(self.group_wheel)
         wheel_layout.setContentsMargins(12, 12, 12, 12)
         
         self.wheel = ColorWheelWidget(size=400, thickness_pct=0.30)
-        # Ensure wheel expands correctly
         self.wheel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.wheel.setMinimumWidth(300)
         self.wheel.setMinimumHeight(300)
         
-        # Add Wheel to grid (0,0)
         wheel_layout.addWidget(self.wheel, 0, 0)
 
         # Pipette Button Construction
         self.btn_pipette = QPushButton("")
-        # Use standard icon as fallback if ICON_DICT is missing in context
-        # Replace with: QIcon(ICON_DICT['pipette']) if available
         self.btn_pipette.setIcon(QIcon(ICON_DICT['pipette']) )
         self.btn_pipette.setStyleSheet(self.ICON_BUTTON_STYLE)
         self.btn_pipette.setFixedSize(28, 28)
         self.btn_pipette.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_pipette.setToolTip("Pick color from screen")
         
-        # Add Button to grid (0,0) but aligned Bottom-Right
         wheel_layout.addWidget(self.btn_pipette, 0, 0, 
                                Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
 
@@ -584,7 +673,7 @@ class ColorWheelTool(QWidget):
 
         self.combo = QComboBox()
         
-        # --- NEW: Filter Logic for ComboBox ---
+        # Filter Logic for ComboBox
         all_rules = list(HarmonyEngine.RELATIONSHIPS.keys())
         
         if self.allowed_rules:
@@ -635,8 +724,7 @@ class ColorWheelTool(QWidget):
             
             right_layout.addWidget(self.group_controls)
             right_layout.addWidget(self.group_harmony)
-            # Add spacer to push content up if needed, or let it stretch
-            right_layout.addStretch() 
+            right_layout.addStretch()  
             
             main_layout.addWidget(right_container, 1) # Stretch factor 1
         else:
@@ -664,31 +752,50 @@ class ColorWheelTool(QWidget):
         self._update()
     
     @Slot(float)
-    def _on_hue(self, h: float): 
+    def _on_hue(self, h: float):  
+        """Callback for hue changes from the color wheel.
+
+        Args:
+            h (float): The new hue value (0.0-1.0).
+        """
         self.hue = h
         self._update()
 
     @Slot(int)
-    def _on_sat(self, v: int): 
+    def _on_sat(self, v: int):
+        """Callback for saturation changes from the slider.
+
+        Args:
+            v (int): The new saturation value (0-255).
+        """
         self.sat = v/255.0
         self.wheel.set_saturation_brightness(self.sat, self.bri)
         self._update()
 
     @Slot(int)
-    def _on_bri(self, v: int): 
+    def _on_bri(self, v: int):  
+        """Callback for brightness changes from the slider.
+
+        Args:
+            v (int): The new brightness value (0-255).
+        """
         self.bri = v/255.0
         self.wheel.set_saturation_brightness(self.sat, self.bri)
         self._update()
 
     def _on_card_clicked(self, h: float):
-        """Sets the clicked hue as the primary hue and refreshes palette."""
+        """Sets the clicked hue as the primary hue and refreshes the palette.
+
+        Args:
+            h (float): The hue value from the clicked card.
+        """
         self.hue = h
         self.wheel.set_hue(h)
         self._update()
     
     @Slot()
     def _launch_pipette(self):
-        """Launches the pixel picker and updates the tool with the result."""
+        """Launches the screen color picker and updates the tool with the picked color."""
         c = PixelColorPicker.pick()
         if c and c.isValid():
             self.hue = c.hueF()
@@ -709,6 +816,7 @@ class ColorWheelTool(QWidget):
             self._update()
 
     def _update(self):
+        """Updates the slider previews, computes new harmonies, and redraws the palette cards."""
         self.slider_sat.set_color_state(self.hue, self.sat, self.bri)
         self.slider_bri.set_color_state(self.hue, self.sat, self.bri)
         
@@ -738,7 +846,13 @@ class ColorWheelTool(QWidget):
             self.cards_layout.addWidget(card)
     
     def get_colors(self) -> Tuple[List[QColor], str]:
-        """Calculates and returns the current list of harmonious colors and the selected rule."""
+        """Calculates and returns the current list of harmonious colors and the selected rule.
+
+        Returns:
+            Tuple[List[QColor], str]: A tuple containing:
+                - The list of generated QColor objects.
+                - The name of the color rule used (str).
+        """
         rule = self.combo.currentText()
         raw_hues = HarmonyEngine.get_harmonies(self.hue, rule)
         colors = []
@@ -750,8 +864,11 @@ class ColorWheelTool(QWidget):
 
 
 class ColorGeneratorDialog(QDialog):
+    """A dialog for generating color harmonies based on a seed color.
 
-    """A dialog for generating color harmonies based on a seed color."""
+    This dialog encapsulates the ColorWheelTool, providing an interactive interface
+    to select and adjust colors before confirming the final palette.
+    """
 
     BUTTON_STYLE = """
         QPushButton {
@@ -764,12 +881,12 @@ class ColorGeneratorDialog(QDialog):
             font-size: 12px;
         }
         QPushButton:hover {
-            background-color: #444; 
+            background-color: #444;  
             border: 1px solid #555;
         }
         QPushButton:pressed {
-            background-color: #222; 
-            border: 1px solid #3daee9; 
+            background-color: #222;  
+            border: 1px solid #3daee9;  
             color: #3daee9;
         }
         QPushButton:disabled {
@@ -784,9 +901,20 @@ class ColorGeneratorDialog(QDialog):
 
     def __init__(self, parent=None, seed_color='#FF0000', color_rule="Complementary",
                  icon=None, orientation: str = "horizontal",
-                 allowed_rules: Optional[List[str]] = None,  # NEW
-                 excluded_rules: Optional[List[str]] = None  # NEW
+                 allowed_rules: Optional[List[str]] = None,  
+                 excluded_rules: Optional[List[str]] = None  
                  ):
+        """Initializes the ColorGeneratorDialog.
+        
+        Args:
+            parent (QWidget, optional): Parent widget for the dialog.
+            seed_color (str): Hex code or name to initialize the color state. Defaults to '#FF0000'.
+            color_rule (str): The initial harmony rule to apply. Defaults to "Complementary".
+            icon (QIcon, optional): Icon for the dialog window.
+            orientation (str): Layout mode, either "vertical" or "horizontal". Defaults to "horizontal".
+            allowed_rules (List[str], optional): If provided, only these rules will appear.
+            excluded_rules (List[str], optional): If provided, these rules will be hidden.
+        """
         super().__init__(parent)
         self.setWindowTitle("Generate Color Harmonies")
         self.resize(self.WINDOW_WIDTH, self.WINDOW_HEIGHT)
@@ -802,7 +930,7 @@ class ColorGeneratorDialog(QDialog):
         self.setLayout(layout)
 
         try:
-            # Pass new arguments to the internal tool
+            # Pass arguments to the internal tool
             self._tool = ColorWheelTool(
                 seed_color=seed_color, 
                 color_rule=color_rule, 
@@ -816,7 +944,7 @@ class ColorGeneratorDialog(QDialog):
 
         # Initialize buttons
         button_container_layout = QHBoxLayout()
-        button_container_layout.setContentsMargins(10, 10, 10, 10) # Args: left, top, right, bottom
+        button_container_layout.setContentsMargins(10, 10, 10, 10) 
         
         self._buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.apply_button_style()
@@ -826,10 +954,15 @@ class ColorGeneratorDialog(QDialog):
         layout.addLayout(button_container_layout)
 
     def apply_button_style(self):
+        """Applies custom styling to the dialog buttons."""
         self._buttons.setStyleSheet(self.BUTTON_STYLE)
     
     def get_colors(self) -> List[QColor]:
-        """Returns the list of selected colors from the inner tool."""
+        """Returns the list of selected colors from the inner tool.
+
+        Returns:
+            List[QColor]: The list of generated harmonious QColor objects.
+        """  	 	
         return self._tool.get_colors()
 
 
@@ -838,7 +971,6 @@ if __name__ == "__main__":
     app = QApplication.instance() or QApplication(sys.argv)
 
     # 2. Execution
-    # Ensure ColorGeneratorDialog is imported or defined
     dlg = ColorGeneratorDialog(seed_color="#3daee9", color_rule="Triadic")
     
     if dlg.exec():
