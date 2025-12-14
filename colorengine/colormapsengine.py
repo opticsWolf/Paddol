@@ -11,82 +11,28 @@ import numpy as np
 from typing import List, Tuple, Union, Dict, Any, Optional, Final
 
 # Define exports explicitly
+# Public API of the color‑engine package.
 __all__ = [
     "OklabEngine",
     "ColorMapsPresetManager",
 ]
 
 # Immutable default configuration.
-# We use a private constant for the source of truth.
+# Base colour‑map presets – immutable, read‑only defaults.
 _DEFAULT_PRESETS: Final[Dict[str, Dict[str, Any]]] = {
-    "Viridis": {
-        "colors": [
-            "#400050",
-            "#3b518a",
-            "#1f8f8c",
-            "#5cc960",
-            "#fde516"
-        ],
-        "mode": "balanced"
-    },
-    "Plasma": {
-        "colors": [
-            "#060083",
-            "#7b02a7",
-            "#ca4578",
-            "#f8933f",
-            "#eef813"
-        ],
-        "mode": "balanced"
-    },
-    "Inferno": {
-        "colors": [
-            "#020210",
-            "#540f6d",
-            "#ba3554",
-            "#f98c08",
-            "#fcfe9e"
-        ],
-        "mode": "balanced"
-    },
-    "Magma": {
-        "colors": [
-            "#030211",
-            "#4e117b",
-            "#b53678",
-            "#fb865f",
-            "#fbfcba"
-        ],
-        "mode": "balanced"
-    },
-    "Cividis": {
-        "colors": [
-            "#001d49",
-            "#414d6b",
-            "#7b7b77",
-            "#bbad6b",
-            "#fde529"
-        ],
-        "mode": "strict"
-    },
-    "Turbo": {
-        "colors": [
-            "#2f123b",
-            "#456ae2",
-            "#28baec",
-            "#30f198",
-            "#a0fc3c",
-            "#edcf39",
-            "#fb7e20",
-            "#d02f03",
-            "#7a0200"
-        ],
-        "mode": "strict"
-    }}
+    "Viridis": {"colors": ["#400050", "#3b518a", "#1f8f8c", "#5cc960", "#fde516"], "mode": "balanced"},
+    "Plasma": {"colors": ["#060083", "#7b02a7", "#ca4578", "#f8933f", "#eef813"], "mode": "balanced"},
+    "Inferno": {"colors": ["#020210", "#540f6d", "#ba3554", "#f98c08", "#fcfe9e"], "mode": "balanced"},
+    "Magma": {"colors": ["#030211", "#4e117b", "#b53678", "#fb865f", "#fbfcba"], "mode": "balanced"},
+    "Cividis": {"colors": ["#001d49", "#414d6b", "#7b7b77", "#bbad6b", "#fde529"], "mode": "strict"},
+    "Turbo": {"colors": ["#2f123b", "#456ae2", "#28baec", "#30f198", "#a0fc3c",
+                         "#edcf39", "#fb7e20", "#d02f03", "#7a0200"], "mode": "strict"},
+}
 
+#Path to the JSON file that stores user‑defined presets
 CMAP_PRESET_JSON = "colorengine/presets.json"
 
-# The public, mutable dictionary that will hold defaults + custom loaded presets
+# The public, mutable dictionary that will hold defaults
 COLORMAP_PRESETS: Dict[str, Dict[str, Any]] = _DEFAULT_PRESETS.copy()
 
 # --- Color Math Library (Oklab) ---
@@ -114,6 +60,13 @@ class OklabEngine:
 
     @staticmethod
     def srgb_to_oklab(rgb_array: np.ndarray) -> np.ndarray:
+        """
+        Convert an ``(N, 3)`` sRGB array to Oklab coordinates.
+        
+        Applies the standard sRGB gamma correction,
+        transforms through the linear LMS matrix, and returns a float32
+        array in Oklab space.
+        """
         linear_rgb = np.where(
             rgb_array <= 0.04045, 
             rgb_array / 12.92, 
@@ -124,6 +77,13 @@ class OklabEngine:
 
     @staticmethod
     def oklab_to_srgb(lab_array: np.ndarray) -> np.ndarray:
+        """
+        Convert an ``(N, 3)`` Oklab array to linear sRGB with gamma correction.
+        
+        The conversion applies the standard matrix transforms,
+        clamps intermediate values to avoid over‑saturation,
+        and returns a float32 array in the range [0, 1].
+        """
         lms = np.power(np.dot(lab_array, OklabEngine.M2_INV), 3)
         linear_rgb = np.dot(lms, OklabEngine.M1_INV)
         linear_rgb_clamped = np.clip(linear_rgb, 0.0, 1.1)
@@ -136,6 +96,13 @@ class OklabEngine:
 
     @staticmethod
     def _normalize_input(colors: Union[List[str], List[Tuple[float, float, float]]]) -> np.ndarray:
+        """
+        Convert a list of colors into an ``(N, 3)`` NumPy array in [0, 1] range.
+        
+        Supports hex strings (e.g., "#ff00aa") and RGB tuples/lists/arrays
+        expressed either in 0–255 or 0–1 scale.  The result is a float32
+        array suitable for subsequent color‑space conversions.
+        """
         parsed_rgb = []
         for c in colors:
             # 1. Handle Hex String
@@ -161,9 +128,27 @@ class OklabEngine:
     @staticmethod
     def generate_gradient(
         colors: Union[List[str], List[Tuple[float, float, float]]], 
-        mode: str = "strict", 
-        n_steps: int = 1024
-    ) -> np.ndarray:
+        mode: str = "strict", n_steps: int = 1024) -> np.ndarray:
+        """
+        Generate a smooth gradient between the supplied colors.
+        
+        The function converts the input anchors to Oklab space,
+        optionally adjusts luminance according to *mode* ('luma' or
+        'balanced'), then linearly interpolates each channel across
+        *n_steps*.  The resulting values are converted back to sRGB
+        and returned as a NumPy array of shape ``(n_steps, 3)``.
+        
+        Args:
+            colors: A list of at least two hex strings or RGB tuples.
+            mode: One of 'strict' (default), 'luma', or 'balanced'.
+            n_steps: Number of steps in the output gradient.
+        
+        Returns:
+            np.ndarray: Array of sRGB values in the range [0, 1].
+        
+        Raises:
+            ValueError: If fewer than two colors are supplied.
+        """
         if len(colors) < 2:
             raise ValueError("At least 2 colors are required to form a gradient.")
 
@@ -236,6 +221,13 @@ class ColorMapsPresetManager:
         combined_presets: Cached dictionary of Defaults + Customs.
     """
     def __init__(self):
+        """
+        Initialise the preset manager.
+        
+        Sets up file paths, placeholders for custom presets,
+        holds a reference to the default presets and prepares
+        a cache for the merged dictionary.
+        """
         self.json_filename: str = CMAP_PRESET_JSON
         self.custom_presets: Dict[str, Any] = None
         # default_presets is for reference, but we merge into the global COLORMAP_PRESETS externally
@@ -245,6 +237,13 @@ class ColorMapsPresetManager:
         self.combined_presets: Optional[Dict[str, Any]] = None
 
     def _create_or_reset_file(self) -> Optional[Exception]:
+        """
+        Create or reset the JSON file that stores custom presets.
+        
+        Writes an empty object to ``self.json_filename`` and clears
+        ``self.custom_presets``.  Returns ``None`` on success,
+        otherwise returns the caught OSError.
+        """
         path = Path(self.json_filename)
         try:
             with path.open('w', encoding='utf-8') as f:
@@ -257,7 +256,8 @@ class ColorMapsPresetManager:
 
     def _is_valid_hex_string(self, s: str) -> bool:
         """
-        Validates if a string is a strict '#RRGGBB' hex code.
+        Check whether ``s`` is a valid hex colour in the form '#RRGGBB'.
+        Returns ``True`` if it matches; otherwise ``False``.
         """
         if not s.startswith("#"):
             return False
@@ -325,7 +325,12 @@ class ColorMapsPresetManager:
 
     def load_custom_presets_from_file(self) -> Optional[Exception]:
         """
-        Loads custom presets with self-healing and deep validation.
+        Load custom presets from a JSON file.
+
+        If the file is missing, empty, or contains invalid data,
+        it is created/reset automatically.  The method returns
+        ``None`` on success; otherwise it returns the exception that
+        occurred (or an error produced by the self‑healing routine).
         """
         presets_path = Path(self.json_filename)
         
@@ -422,7 +427,16 @@ class ColorMapsPresetManager:
         }
         
         return cmap_dict
+    
     def save_custom_presets_to_file(self) -> Optional[Exception]:
+        """
+        Save custom presets to a JSON file.
+        
+        Writes ``self.custom_presets`` to the path specified by
+        ``self.json_filename`` using UTF‑8 encoding and an indentation of four
+        spaces.  Returns ``None`` on success, otherwise returns the exception
+        that was raised.
+        """
         presets_path = Path(self.json_filename)
         try:
             with presets_path.open('w', encoding='utf-8') as f:
