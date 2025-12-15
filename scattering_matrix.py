@@ -6,81 +6,13 @@ Copyright (c) 2025 opticsWolf
 SPDX-License-Identifier: LGPL-3.0-or-later
 """
 import numpy as np
-from numba import njit, prange, complex128, float64, int32, boolean
+from numba import njit, prange, complex128, float64, int32
 
 # --- Constants ---
 POL_S = 0
 POL_P = 1
 
-# --- JIT Compiled Core Functions ---
-
-@njit(cache=True, inline='always')
-def mat_mul_2x2_complex(a, b):
-    """
-    Multiplies two 2x2 complex matrices representing transfer operators for coherent wave propagation.
-
-    This function is essential for calculating the combined effect of multiple layers in stratified media,
-    such as thin films or multilayers. In X-ray and neutron reflectometry, these matrices encode Fresnel
-    reflection/transmission coefficients and phase shifts due to layer thicknesses. The complex numbers
-    are necessary because wave fields have both amplitude (magnitude) and phase (imaginary component).
-
-    Args:
-        a: First 2x2 complex matrix (dtype=complex128) representing the first transfer operator.
-        b: Second 2x2 complex matrix (dtype=complex128) representing the second transfer operator.
-
-    Returns:
-        The product matrix R = A·B as a 2x2 complex matrix. This represents how the wave field
-        transforms when passing through two sequential layers.
-
-    Physical Context:
-    In coherent scattering theories, the relationship between incoming and outgoing waves at an interface is described by:
-
-        [E⁺_j]   = M₁·M₂·...·[E⁺_0]
-        [E⁻_j]          [E⁻_0]
-
-    where each 2x2 matrix Mᵢ represents one layer's transfer operator, and (E⁺, E⁻) are the
-    complex wave amplitudes in opposite directions. The product of matrices accumulates these effects.
-    """
-    res = np.empty((2, 2), dtype=complex128)
-    res[0, 0] = a[0, 0] * b[0, 0] + a[0, 1] * b[1, 0]
-    res[0, 1] = a[0, 0] * b[0, 1] + a[0, 1] * b[1, 1]
-    res[1, 0] = a[1, 0] * b[0, 0] + a[1, 1] * b[1, 0]
-    res[1, 1] = a[1, 0] * b[0, 1] + a[1, 1] * b[1, 1]
-    return res
-
-@njit(cache=True, inline='always')
-def mat_mul_2x2_real(a, b):
-    """
-    Multiplies two 2x2 real matrices representing intensity transfer operators for incoherent systems.
-
-    This function is used when modeling systems where wave phase information is lost (due to short coherence length,
-    absorption, or diffuse scattering), and only intensities matter. The matrix elements typically represent
-    probabilities, absorption coefficients, or intensity factors that combine linearly through addition/multiplication.
-
-    Args:
-        a: First 2x2 real matrix (dtype=float64) representing the first intensity transfer operator.
-        b: Second 2x2 real matrix (dtype=float64) representing the second intensity transfer operator.
-
-    Returns:
-        The product matrix R = A·B as a 2x2 real matrix. This represents how the intensity transforms
-        when passing through two sequential incoherent processes.
-
-    Physical Context:
-    In incoherent scattering models, the relationship between incoming and outgoing intensities at an interface is described by:
-
-        [I_j]   = N₁·N₂·...·[I_0]
-        [Q_j]          [Q_0]
-
-    where each 2x2 matrix Nᵢ represents one layer's intensity operator. I and Q typically represent
-    the reflected/transmitted intensity and some auxiliary quantity (e.g., polarization), and
-    the real-valued matrices contain absorption coefficients or diffuse scattering factors.
-    """
-    res = np.empty((2, 2), dtype=float64)
-    res[0, 0] = a[0, 0] * b[0, 0] + a[0, 1] * b[1, 0]
-    res[0, 1] = a[0, 0] * b[0, 1] + a[0, 1] * b[1, 1]
-    res[1, 0] = a[1, 0] * b[0, 0] + a[1, 1] * b[1, 0]
-    res[1, 1] = a[1, 0] * b[0, 1] + a[1, 1] * b[1, 1]
-    return res
+# --- JIT Compiled Core Functions (Scalarized) ---
 
 @njit(cache=True, inline='always')
 def w_function(q, rough_type):
@@ -133,15 +65,13 @@ def w_function(q, rough_type):
         Formula: W(q) = **e^(-q²/2)**
         Explanation: Classic form assuming surface heights are normally distributed. Often written as e^(-q²σ²/2) with σ=1 here.
     """
-
     if rough_type == 0: # None
         return 1.0 + 0j
 
-    # Linear (Default in Code 2)
+    # Linear (Default)
     if rough_type == 1: 
         factor = 1.73205080757 # sqrt(3)
         val = q * factor
-        # Avoid div by zero
         if np.abs(val) < 1e-9:
             return 1.0 + 0j
         return np.sin(val) / val
@@ -154,31 +84,6 @@ def w_function(q, rough_type):
     elif rough_type == 3: 
         return 1.0 / (1.0 + (q**2) / 2.0)
 
-    # Gaussian / Error
-    elif rough_type == 4: 
-        return np.exp(-(q**2) / 2.0)
-        
-    return 1.0 + 0j
-    if rough_type == 0: # None
-        return 1.0 + 0j
-    
-    # Linear (Default in Code 2)
-    if rough_type == 1: 
-        factor = 1.73205080757 # sqrt(3)
-        val = q * factor
-        # Avoid div by zero
-        if np.abs(val) < 1e-9:
-            return 1.0 + 0j
-        return np.sin(val) / val
-    
-    # Step
-    elif rough_type == 2: 
-        return np.cos(q)
-    
-    # Exponential
-    elif rough_type == 3: 
-        return 1.0 / (1.0 + (q**2) / 2.0)
-    
     # Gaussian / Error
     elif rough_type == 4: 
         return np.exp(-(q**2) / 2.0)
@@ -186,12 +91,13 @@ def w_function(q, rough_type):
     return 1.0 + 0j
 
 @njit(cache=True, inline='always')
-def mod_matr(S):
+def mod_matr_scalar(s00, s01, s10, s11):
     """
-    Converts a coherent scattering matrix to an intensity matrix for incoherent light propagation.
+    Scalarized version of mod_matr. Converts coherent scattering matrix components 
+    to intensity matrix components for incoherent light propagation.
 
-    This function transforms a 2x2 complex scattering matrix S (representing field amplitudes)
-    into a real-valued modified intensity matrix M that describes how intensities propagate
+    This function transforms the components of a 2x2 complex scattering matrix S (representing field amplitudes)
+    into the components of a real-valued modified intensity matrix M that describes how intensities propagate
     in systems where wave phase information is lost, such as thick layers or with incoherent sources.
 
     Mathematical Definitions:
@@ -214,10 +120,12 @@ def mod_matr(S):
     of S's elements and its determinant, ensuring energy conservation.
 
     Args:
-        S: Complex 2x2 numpy array (dtype=complex128) representing the coherent scattering matrix.
+        s00, s01, s10, s11: Complex scalars (dtype=complex128) representing the components 
+                            of the coherent scattering matrix S.
 
     Returns:
-        M: Real 2x2 numpy array (dtype=float64) with elements derived from |S_ij|² and det(S).
+        m00, m01, m10, m11: Real scalars (dtype=float64) representing the components
+                            of the modified intensity matrix M.
 
     References:
         Katsidis, C. C., & Siapkas, D. I. (2002). Applied Optics, 41(19), 3978-3987.
@@ -225,33 +133,21 @@ def mod_matr(S):
     1. Removes sqrt() calls for speed (using manual norm squared).
     2. Stabilizes M[1, 1] calculation for absorbing/lossy media.
     """
-    M = np.empty((2, 2), dtype=float64)
-    
-    # Extract components
-    s00 = S[0, 0]
-    s01 = S[0, 1]
-    s10 = S[1, 0]
-    s11 = S[1, 1]
-    
     # helper: fast complex norm squared (avoids sqrt)
-    # |z|^2 = Re(z)^2 + Im(z)^2
     mag_s00_sq = s00.real*s00.real + s00.imag*s00.imag
     mag_s01_sq = s01.real*s01.real + s01.imag*s01.imag
     mag_s10_sq = s10.real*s10.real + s10.imag*s10.imag
     
     # M00 = |1/t|^2
-    M[0, 0] = mag_s00_sq
+    m00 = mag_s00_sq
     
     # M01 = -|r_back/t|^2
-    M[0, 1] = -mag_s01_sq
+    m01 = -mag_s01_sq
     
     # M10 = |r/t|^2
-    M[1, 0] = mag_s10_sq
+    m10 = mag_s10_sq
     
     # M11 calculation using determinant identity
-    # Formula: (|det S|^2 - |s01 * s10|^2) / |s00|^2
-    # This handles absorption correctly where |det S| != 1
-    
     det_real = s00.real*s11.real - s00.imag*s11.imag - (s01.real*s10.real - s01.imag*s10.imag)
     det_imag = s00.real*s11.imag + s00.imag*s11.real - (s01.real*s10.imag + s01.imag*s10.real)
     mag_det_sq = det_real*det_real + det_imag*det_imag
@@ -261,19 +157,18 @@ def mod_matr(S):
     
     numerator = mag_det_sq - mag_prod_sq
     
-    # Guard against division by zero (though S[0,0] -> 0 implies infinite transmission)
+    m11 = 0.0
     if mag_s00_sq > 1e-16:
-        M[1, 1] = numerator / mag_s00_sq
-    else:
-        M[1, 1] = 0.0
+        m11 = numerator / mag_s00_sq
         
-    return M
+    return m00, m01, m10, m11
 
-@njit(cache=True)
-def solve_coherent_chunk(start_idx, end_idx, n_arr, d_arr, rough_arr, rough_type_arr, 
-                         lam, NSinFi, pol):
+@njit(cache=True, inline='always')
+def solve_coherent_chunk_scalar(start_idx, end_idx, n_arr, d_arr, rough_arr, 
+                                rough_type_arr, lam, NSinFi, pol):
     """
-    Calculates the scattering matrix for a stack of coherent layers using Transfer Matrix Method (TMM).
+    Calculates the scattering matrix components for a stack of coherent layers using Transfer Matrix Method (TMM),
+    returning them as scalars to avoid array allocation overhead.
 
     This function computes the combined effect of interfaces and layer propagations within
     a specified range of layers. It accounts for material properties, layer thicknesses,
@@ -297,40 +192,30 @@ def solve_coherent_chunk(start_idx, end_idx, n_arr, d_arr, rough_arr, rough_type
         pol: Polarization state (P=1 for parallel, S=0 for perpendicular to plane of incidence)
 
     Returns:
-        A 2×2 complex scattering matrix S that relates incoming and outgoing wave amplitudes:
+        s00, s01, s10, s11: Four complex scalars representing the components of the 2×2 complex scattering matrix S.
             [E⁺_out]   = S₁₁·E⁺_in + S₁₂·E⁻_out
             [E⁻_in]     S₂₁·E⁺_in + S₂₂·E⁻_out
         From this, the reflectivity R = |S₂₁/S₁₁|² and transmittivity T = 1-|r|² can be calculated.
-
-    Implementation Details:
-    - Matrices are accumulated from bottom (substrate) to top for numerical stability.
-    - Fresnel coefficients r and t are computed for each interface, accounting for polarization.
-    - Roughness factors α, β, γ modify these coefficients based on the specified model (0-5):
-        * Models 0-4 use q-vector dependent factors via w_function()
-        * Model 5 uses Nevot-Croce exponential decay factor uniformly
-    - Phase shifts are applied to waves propagating through each layer thickness.
-    - Numerical safeguards limit imaginary parts of phases to ±50 to prevent overflow.
     """
-    # Initialize Identity
-    S = np.eye(2, dtype=complex128)
-    
-    # Loop Interfaces Backwards (standard TMM accumulation)
-    # Range: end_idx-1 down to start_idx
-    # An interface K exists between Layer K and K+1
+    # Initialize Identity S-Matrix scalars
+    s00 = 1.0 + 0j
+    s01 = 0.0 + 0j
+    s10 = 0.0 + 0j
+    s11 = 1.0 + 0j
     
     count = end_idx - start_idx
+    two_pi_lam = (2.0 * np.pi) / lam
     
+    # Loop Interfaces Backwards
     for k in range(count - 1, -1, -1):
         idx = start_idx + k
         
-        # --- Interface Calculation (Layer idx -> Layer idx+1) ---
+        # --- Interface Calculation ---
         N1 = n_arr[idx]
         N2 = n_arr[idx+1]
         sigma = rough_arr[idx+1]
         rtype = rough_type_arr[idx+1]
         
-        # Cosines derived from Snell's invariant NSinFi
-        # cos = sqrt(1 - (N0sinFi/N)^2)
         cos1 = np.sqrt(1.0 - (NSinFi/N1)**2)
         cos2 = np.sqrt(1.0 - (NSinFi/N2)**2)
         
@@ -339,7 +224,6 @@ def solve_coherent_chunk(start_idx, end_idx, n_arr, d_arr, rough_arr, rough_type
             num_r = N2 * cos1 - N1 * cos2
             den_r = N2 * cos1 + N1 * cos2
             num_t = 2.0 * N1 * cos1
-            # den_t = den_r
         else: # POL_S
             num_r = N1 * cos1 - N2 * cos2
             den_r = N1 * cos1 + N2 * cos2
@@ -348,27 +232,16 @@ def solve_coherent_chunk(start_idx, end_idx, n_arr, d_arr, rough_arr, rough_type
         r = num_r / den_r
         t = num_t / den_r
         
-        # Roughness Factors (w_function)
-        two_pi_lam = (2.0 * np.pi) / lam
-        
-        # --- NEW ROUGHNESS FACTOR CALCULATION ---
-        if rtype == 5: # Nevot-Croce Factor (Simplified)
-            k0 = two_pi_lam # 2*pi/lambda
+        # Roughness
+        if rtype == 5: # Nevot-Croce
+            k0 = two_pi_lam
             kz1 = N1 * cos1
             kz2 = N2 * cos2
-            
-            # The Nevot-Croce factor: exp(-2.0 * (k0 * sigma)**2 * kz1 * kz2)
-            # This is typically used to replace the gamma^2 term, 
-            # or is applied more generally. Assuming it applies to all factors 
-            # for a simplified implementation.
             nc_factor = np.exp(-2.0 * (k0 * sigma)**2 * kz1 * kz2)
-            
             al = nc_factor
             be = nc_factor
-            ga = nc_factor # Applying it to all factors
-            
-        else: # Existing Code 2 Roughness Models (including Gaussian)
-            # q vectors
+            ga = nc_factor
+        else:
             q_al = two_pi_lam * 2 * N1 * cos1 * sigma
             q_be = two_pi_lam * 2 * N2 * cos2 * sigma
             q_ga = two_pi_lam * (N1 * cos1 - N2 * cos2) * sigma
@@ -377,36 +250,43 @@ def solve_coherent_chunk(start_idx, end_idx, n_arr, d_arr, rough_arr, rough_type
             be = w_function(q_be, rtype)
             ga = w_function(q_ga, rtype)
         
-        # Interface Matrix I
+        # Interface Matrix Components (I)
         gat = ga * t
         inv_gat = 1.0 / gat
         
-        I_mat = np.empty((2, 2), dtype=complex128)
-        I_mat[0, 0] = inv_gat
-        I_mat[0, 1] = be * r * inv_gat
-        I_mat[1, 0] = al * r * inv_gat
-        I_mat[1, 1] = (ga**2 * (1.0 - r**2) + al * be * r**2) * inv_gat
+        i00 = inv_gat
+        i01 = be * r * inv_gat
+        i10 = al * r * inv_gat
+        i11 = (ga**2 * (1.0 - r**2) + al * be * r**2) * inv_gat
         
-        S = mat_mul_2x2_complex(I_mat, S)
+        # Matrix Mult: S_new = I * S_old
+        # Manual inline multiplication of 2x2 matrices
+        _s00 = i00 * s00 + i01 * s10
+        _s01 = i00 * s01 + i01 * s11
+        _s10 = i10 * s00 + i11 * s10
+        _s11 = i10 * s01 + i11 * s11
+        
+        s00, s01, s10, s11 = _s00, _s01, _s10, _s11
         
         # --- Phase Matrix Calculation ---
-        # Apply phase of layer 'idx' IF it is not the very first layer of this chunk
         if k > 0:
             d = d_arr[idx]
-            # beta = 2pi/lam * d * N * cos
             beta = two_pi_lam * d * N1 * cos1
             
-            # Overflow protection (from Code 2)
             if beta.imag < -50.0: beta = complex(beta.real, -50.0)
             elif beta.imag > 50.0: beta = complex(beta.real, 50.0)
             
-            P_mat = np.zeros((2, 2), dtype=complex128)
-            P_mat[0, 0] = np.exp(-1j * beta)
-            P_mat[1, 1] = np.exp(1j * beta)
+            # P matrix is diagonal: diag(exp(-iB), exp(iB))
+            p00 = np.exp(-1j * beta)
+            p11 = np.exp(1j * beta)
             
-            S = mat_mul_2x2_complex(P_mat, S)
+            # Matrix Mult: S_new = P * S_old (Diagonal mult is simpler)
+            s00 = p00 * s00
+            s01 = p00 * s01
+            s10 = p11 * s10
+            s11 = p11 * s11
             
-    return S
+    return s00, s01, s10, s11
 
 @njit(parallel=True, fastmath=True, cache=True)
 def core_engine(wavls, theta_rad, n_layers, indices, thicknesses, 
@@ -421,6 +301,7 @@ def core_engine(wavls, theta_rad, n_layers, indices, thicknesses,
     - Modified intensity matrices for incoherent boundaries
 
     The calculation is parallelized across wavelengths, making it efficient for spectral analysis.
+    This optimized version uses scalar replacement to avoid small array allocations.
 
     Parameters:
         wavls: float array, wavelengths in [length units] to calculate spectra for
@@ -442,47 +323,51 @@ def core_engine(wavls, theta_rad, n_layers, indices, thicknesses,
     The function models real-world systems where some layers maintain coherence (thin films)
     while others break it (thick substrates). It combines coherent field calculations with
     incoherent intensity transport to accurately predict optical properties.
-
-    Parallelization: The wavelength loop is parallelized for efficient broadband calculations.
     """
     num_wavs = len(wavls)
+    idx_N = n_layers - 1
     
-    # Initialize all arrays to zero. They will be filled only if requested.
+    # Pre-allocate output arrays
     Rs_out = np.zeros(num_wavs, dtype=float64)
     Rp_out = np.zeros(num_wavs, dtype=float64)
     Ts_out = np.zeros(num_wavs, dtype=float64)
     Tp_out = np.zeros(num_wavs, dtype=float64)
     
-    # Identify Layer 0 (Ambient) and Layer N (Final Medium)
-    idx_N = n_layers - 1
-    
     for w in prange(num_wavs):
         lam = wavls[w]
-        N0 = indices[0, w]      # Ambient Refractive Index
-        NN = indices[idx_N, w]  # Final Medium Refractive Index
-        
-        # Snell's Invariant: N₀ sin(φ₀)
+        N0 = indices[0, w]
+        NN = indices[idx_N, w]
         NSinFi = N0 * np.sin(theta_rad)
         
-        # Pre-calculate angular factors for Ambient (Layer 0) and Final Medium (Layer N)
         cos0 = np.sqrt(1.0 - (NSinFi/N0)**2)
         cosN = np.sqrt(1.0 - (NSinFi/NN)**2)
         
-        # --- 1. S POLARIZATION PATH (Perpendicular) ---
+        # --- S POLARIZATION ---
         if calc_s:
-            M_total_s = np.eye(2, dtype=float64)
+            # Accumulator Matrix M_total (Identity)
+            ms00, ms01, ms10, ms11 = 1.0, 0.0, 0.0, 1.0
             start_node = 0
             
             for i in range(n_layers):
                 if incoherent_flags[i] or i == idx_N:
+                    # 1. Coherent Chunk -> S (complex scalars)
+                    cs00, cs01, cs10, cs11 = solve_coherent_chunk_scalar(
+                        start_node, i, indices[:, w], thicknesses, 
+                        rough_vals, rough_types, lam, NSinFi, POL_S)
                     
-                    # Calculate Coherent S-Matrix for chunk [start_node ... i]
-                    S_coh = solve_coherent_chunk(start_node, i, indices[:, w], thicknesses, 
-                                                 rough_vals, rough_types, lam, NSinFi, POL_S)
-                    M_coh = mod_matr(S_coh)
-                    M_total_s = mat_mul_2x2_real(M_coh, M_total_s)
+                    # 2. Convert S -> M (float scalars)
+                    mm00, mm01, mm10, mm11 = mod_matr_scalar(cs00, cs01, cs10, cs11)
                     
-                    # Propagate through the Incoherent Layer 'i' (if it exists)
+                    # 3. Multiply: M_total = M_new * M_total
+                    # (Note: Standard accumulation is New(left) * Old(right))
+                    nms00 = mm00 * ms00 + mm01 * ms10
+                    nms01 = mm00 * ms01 + mm01 * ms11
+                    nms10 = mm10 * ms00 + mm11 * ms10
+                    nms11 = mm10 * ms01 + mm11 * ms11
+                    
+                    ms00, ms01, ms10, ms11 = nms00, nms01, nms10, nms11
+                    
+                    # 4. Incoherent Prop
                     if i < idx_N:
                         N_inc = indices[i, w]
                         d_inc = thicknesses[i]
@@ -492,51 +377,48 @@ def core_engine(wavls, theta_rad, n_layers, indices, thicknesses,
                         term1 = np.abs(np.exp(-1j * beta))**2
                         term2 = np.abs(np.exp(1j * beta))**2
                         
-                        M_inc = np.zeros((2, 2), dtype=float64)
-                        M_inc[0, 0] = term1; M_inc[1, 1] = term2
-                        M_total_s = mat_mul_2x2_real(M_inc, M_total_s)
+                        # Diagonal Mult: M_total = Diag(t1, t2) * M_total
+                        ms00 = term1 * ms00
+                        ms01 = term1 * ms01
+                        ms10 = term2 * ms10
+                        ms11 = term2 * ms11
                     
                     start_node = i
             
-            # --- Extract S results ---
-            m00 = M_total_s[0, 0]
-            m10 = M_total_s[1, 0]
-            
-            if m00 > 1e-15:
-                R_val = m10 / m00
-                T_raw = 1.0 / m00
-                
-                # T Normalization: Re(N_N * cosN) / Re(N0 * cos0)
-                # This factor correctly scales the intensity to energy flux (Poynting vector)
-                # for any medium (absorbing or non-absorbing).
+            # Extract Results
+            if ms00 > 1e-15:
+                R_val = ms10 / ms00
+                T_raw = 1.0 / ms00
                 numer = np.real(NN * cosN)
                 denom = np.real(N0 * cos0)
-                
-                # Check for zero denominator (e.g., TIR boundary condition)
-                if denom > 1e-12:
-                    factor = numer / denom
-                else:
-                    factor = 0.0
-
+                factor = numer / denom if denom > 1e-12 else 0.0
                 Rs_out[w] = R_val
                 Ts_out[w] = T_raw * factor
 
-
-        # --- 2. P POLARIZATION PATH (Parallel) ---
+        # --- P POLARIZATION ---
         if calc_p:
-            M_total_p = np.eye(2, dtype=float64)
+            mp00, mp01, mp10, mp11 = 1.0, 0.0, 0.0, 1.0
             start_node = 0
             
             for i in range(n_layers):
                 if incoherent_flags[i] or i == idx_N:
+                    # 1. Coherent Chunk
+                    cs00, cs01, cs10, cs11 = solve_coherent_chunk_scalar(
+                        start_node, i, indices[:, w], thicknesses, 
+                        rough_vals, rough_types, lam, NSinFi, POL_P)
                     
-                    # Calculate Coherent S-Matrix for chunk [start_node ... i]
-                    S_coh = solve_coherent_chunk(start_node, i, indices[:, w], thicknesses, 
-                                                 rough_vals, rough_types, lam, NSinFi, POL_P)
-                    M_coh = mod_matr(S_coh)
-                    M_total_p = mat_mul_2x2_real(M_coh, M_total_p)
+                    # 2. Mod Matrix
+                    mm00, mm01, mm10, mm11 = mod_matr_scalar(cs00, cs01, cs10, cs11)
                     
-                    # Propagate through the Incoherent Layer 'i' (if it exists)
+                    # 3. Multiply
+                    nmp00 = mm00 * mp00 + mm01 * mp10
+                    nmp01 = mm00 * mp01 + mm01 * mp11
+                    nmp10 = mm10 * mp00 + mm11 * mp10
+                    nmp11 = mm10 * mp01 + mm11 * mp11
+                    
+                    mp00, mp01, mp10, mp11 = nmp00, nmp01, nmp10, nmp11
+                    
+                    # 4. Incoherent Prop
                     if i < idx_N:
                         N_inc = indices[i, w]
                         d_inc = thicknesses[i]
@@ -546,29 +428,20 @@ def core_engine(wavls, theta_rad, n_layers, indices, thicknesses,
                         term1 = np.abs(np.exp(-1j * beta))**2
                         term2 = np.abs(np.exp(1j * beta))**2
                         
-                        M_inc = np.zeros((2, 2), dtype=float64)
-                        M_inc[0, 0] = term1; M_inc[1, 1] = term2
-                        M_total_p = mat_mul_2x2_real(M_inc, M_total_p)
+                        mp00 = term1 * mp00
+                        mp01 = term1 * mp01
+                        mp10 = term2 * mp10
+                        mp11 = term2 * mp11
                     
                     start_node = i
-            
-            # --- Extract P results ---
-            m00 = M_total_p[0, 0]
-            m10 = M_total_p[1, 0]
-            
-            if m00 > 1e-15:
-                R_val = m10 / m00
-                T_raw = 1.0 / m00
 
-                # T Normalization: Re(N_N * cosN) / Re(N0 * cos0)
+            # Extract Results
+            if mp00 > 1e-15:
+                R_val = mp10 / mp00
+                T_raw = 1.0 / mp00
                 numer = np.real(NN * cosN)
                 denom = np.real(N0 * cos0)
-                
-                if denom > 1e-12:
-                    factor = numer / denom
-                else:
-                    factor = 0.0
-
+                factor = numer / denom if denom > 1e-12 else 0.0
                 Rp_out[w] = R_val
                 Tp_out[w] = T_raw * factor
                 
@@ -577,7 +450,9 @@ def core_engine(wavls, theta_rad, n_layers, indices, thicknesses,
 # --- Python Class Wrapper ---
 
 class FastScatterMatrix:
-    def __init__(self, layer_indices, thicknesses, incoherent_flags, roughness_types, roughness_values, wavls, theta):
+    def __init__(self, layer_indices: np.ndarray, thicknesses: np.ndarray, 
+                 incoherent_flags: np.ndarray, roughness_types: list[int], 
+                 roughness_values: list[float], wavls: np.ndarray, theta: float):
         """
         Prepares physical parameters for fast spectral calculations of multilayer optical structures.
 
@@ -593,10 +468,10 @@ class FastScatterMatrix:
                 Ambient and substrate should have thickness=0
             incoherent_flags: bool ndarray (n_layers)
                 True for layers that break phase coherence (e.g., thick substrates)
-            roughness_params: list of tuples [(type, sigma), ...]
-                For each interface below a layer:
-                - type: int, roughness model identifier (0-5)
-                - sigma: float, roughness magnitude [length units]
+            roughness_types: list of int
+                Integer specifying roughness model type (0-5) for each interface below a layer.
+            roughness_values: list of float
+                Roughness σ values [length units] for each interface below a layer.
             wavls: float ndarray
                 Wavelengths at which to calculate spectra [same length units as thicknesses]
             theta: float
@@ -612,7 +487,6 @@ class FastScatterMatrix:
         self.theta = np.radians(theta)
         self.n_layers = len(thicknesses)
         
-        # Arrays
         self.indices = np.ascontiguousarray(layer_indices, dtype=np.complex128)
         self.thicknesses = np.ascontiguousarray(thicknesses, dtype=np.float64)
         self.inc_flags = np.ascontiguousarray(incoherent_flags, dtype=np.bool_)
@@ -620,10 +494,10 @@ class FastScatterMatrix:
         self.r_types = np.ascontiguousarray(roughness_types, dtype=np.int32)
         self.r_vals = np.ascontiguousarray(roughness_values, dtype=np.float64)
         
-    def compute_RT(self, mode='u'):
+    def compute_RT(self, mode: str = 'u') -> dict[str, np.ndarray]:
         """
         Calculates polarized reflectance (R) and transmittance (T) spectra based 
-        on requested polarization mode..
+        on requested polarization mode.
         
         This method executes the Numba-optimized `core_engine` with preprocessed parameters,
         returning spectral results for S (perpendicular) or P (parallel) polarizations
@@ -641,16 +515,8 @@ class FastScatterMatrix:
         
         Note: The computation is performed in parallel across wavelengths by core_engine.
         """
-        calc_s = False
-        calc_p = False
-        
-        if mode.lower() == 's':
-            calc_s = True
-        elif mode.lower() == 'p':
-            calc_p = True
-        else: # Unpolarized or Both
-            calc_s = True
-            calc_p = True
+        calc_s = mode.lower() in ('s', 'u', 'both')
+        calc_p = mode.lower() in ('p', 'u', 'both')
 
         Rs, Rp, Ts, Tp = core_engine(
             self.wavls, self.theta, self.n_layers, self.indices, 
@@ -674,63 +540,47 @@ class FastScatterMatrix:
 if __name__ == "__main__":
     import time
     
-    print("--- Setting up Mock Data ---")
+    print("--- Setting up Mock Data (Optimized) ---")
     
-    # 1. Mock Data Setup
     n_wavs = 1000
-    wavls = np.linspace(300, 800, n_wavs) # Wavelengths in nm
+    wavls = np.linspace(300, 800, n_wavs)
     
-    # Target wavelength for Quarter-Wave Stack design
+    # Quarter-Wave Stack Design
     lambda_0 = 550.0 
     
-    # Ambient and Substrate
-    n_air = np.full(n_wavs, 1.0 + 0.0j, dtype=np.complex128)      # Air
-    n_bk7 = np.full(n_wavs, 1.515 + 0.0j, dtype=np.complex128)    # Substrate (BK7 Glass)
+    # Materials
+    n_air = np.full(n_wavs, 1.0 + 0.0j, dtype=np.complex128)
+    n_bk7 = np.full(n_wavs, 1.515 + 0.0j, dtype=np.complex128)
+    n_sio2 = np.full(n_wavs, 1.46 + 0.0j, dtype=np.complex128)
+    n_ta2o5 = np.full(n_wavs, 2.10 + 0.0j, dtype=np.complex128)
     
-    # Layer Materials
-    n_sio2 = np.full(n_wavs, 1.46 + 0.0j, dtype=np.complex128)   # Low Index (L)
-    n_ta2o5 = np.full(n_wavs, 2.10 + 0.0j, dtype=np.complex128)  # High Index (H)
-    
-    # Thicknesses for Quarter-Wave Stack at lambda_0=550nm
-    # d = lambda_0 / (4 * n)
     d_sio2 = lambda_0 / (4.0 * 1.46)
     d_ta2o5 = lambda_0 / (4.0 * 2.10)
     
-    # 2. Build Structure List
-    # Format: [Thickness, N_Array, Incoherent_Bool, Roughness_Float]
+    # Structure Construction
+    # [Thickness, N_Array, Incoherent_Bool, Roughness_Float]
     structure = []
-    
-    # Layer 0: Ambient (Air, Semi-infinite)
     structure.append([0.0, n_air, False, 0.0])
-
-    # Layers 1 to 20: Alternating Ta2O5 (H) and SiO2 (L)
-    num_pairs = 10
     
+    num_pairs = 10
     for i in range(num_pairs):
-        # Ta2O5 (High Index Layer)
-        structure.append([d_ta2o5, n_ta2o5, False, 0.1]) # Layer H
-        # SiO2 (Low Index Layer)
-        structure.append([d_sio2, n_sio2, False, 0.1])   # Layer L
+        structure.append([d_ta2o5, n_ta2o5, False, 0.1])
+        structure.append([d_sio2, n_sio2, False, 0.1])
         
-    # Layer 21: Substrate (BK7, Semi-infinite)
     structure.append([0.0, n_bk7, False, 0.0])
     
-    # 3. Simulation Parameters
-    fi_rad = np.deg2rad(45.0) # 45 degrees incidence angle
-    # --- BRIDGE: Convert User List to Class Inputs ---
+    # Flatten Data for Class
     indices_list = []
     thick_list = []
     rough_type_list = []
     rough_value_list = []
-    inc_list = [] # <--- Added: Need to extract incoherent flags for new class
-    
+    inc_list = []
     
     for layer in structure:
         thick_list.append(layer[0])
         indices_list.append(layer[1])
-        inc_list.append(layer[2]) # <--- Extract Incoherent Bool
+        inc_list.append(layer[2])
         
-        # Map float roughness to (Type 1=Linear, Value)
         r_val = layer[3]
         if r_val > 0:
             rough_type_list.append(1) 
@@ -741,34 +591,29 @@ if __name__ == "__main__":
             
     indices_arr = np.vstack(indices_list)
     thick_arr = np.array(thick_list)
-    inc_arr = np.array(inc_list, dtype=np.bool_) # <--- Convert to numpy array
-    # --------------------------------------------------
+    inc_arr = np.array(inc_list, dtype=np.bool_)
 
-    # Instantiate the Class
-    # Note: New class calculates all polarizations, so pol_type arg is removed
-    solver = FastScatterMatrix(indices_arr, thick_arr, inc_arr, rough_type_list, rough_value_list, wavls, np.degrees(fi_rad))
+    # Instantiate
+    solver = FastScatterMatrix(indices_arr, thick_arr, inc_arr, rough_type_list, rough_value_list, wavls, 45.0)
 
-    print("--- Starting Numba JIT Compilation (First Run) ---")
+    print("--- First Run (Compilation) ---")
     t_compile_start = time.time()
     _ = solver.compute_RT()
-    print(f"First run (Compile + Exec) time: {time.time() - t_compile_start:.4f}s")
+    print(f"Compilation + Exec: {time.time() - t_compile_start:.4f}s")
 
-    print("\n--- Starting Benchmark (Second Run) ---")
+    print("\n--- Benchmark (1000 Iterations) ---")
     t0 = time.time()
-    
-    # Calculate
     for i in range(1000):
         res = solver.compute_RT()
     
-        # Map Dictionary results to usage example variables
-        Rs, Rp, R_avg = res['Rs'], res['Rp'], res['Ru']
-        Ts, Tp, T_avg = res['Ts'], res['Tp'], res['Tu']
-    
     dt = time.time() - t0
-    print(f"Calculation for {n_wavs} wavelengths took: {dt:.6f}s")
-    print(f"Speed: {n_wavs / dt:.2f} wavelengths/sec")
+    print(f"Total time: {dt:.6f}s")
+    print(f"Speed: {n_wavs * 1000 / dt:.2f} wavelengths/sec")
 
-    # 5. Display Sample Results
+    # Validation Output
+    Rs = res['Rs']
+    Rp = res['Rp']
+    T_avg = res['Tu']
     print("\n--- Sample Results (Every 100th point) ---")
     print(f"{'Wavel (nm)':<12} | {'Rs':<10} | {'Rp':<10} | {'Trans (Avg)':<10}")
     print("-" * 50)
