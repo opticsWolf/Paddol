@@ -20,12 +20,50 @@ def w_function(q, rough_type):
     Calculates the roughness factor W(q), also known as the Debye-Waller-like factor or
     interfacial form factor, for optical thin films with various interface profiles.
 
+    This function models how surface roughness affects reflectivity by providing a
+    decay factor that depends on the momentum transfer q and the assumed interface profile.
+    The implemented models are commonly used in X-ray and neutron reflectometry to account
+    for non-ideal interfaces.
+
     Args:
-        q (float or complex): Momentum transfer perpendicular to the interface.
-        rough_type (int): Integer specifying the type of roughness model (0-4).
+        q (float or complex): Momentum transfer perpendicular to the interface, typically
+            denoted as q_z with units of inverse length (Å⁻¹).
+        rough_type (int): Integer specifying the type of roughness model. Supported values:
+            - 0: No roughness (sharp interface)
+            - 1: Linear profile
+            - 2: Step function
+            - 3: Exponential decay
+            - 4: Gaussian profile
 
     Returns:
-        complex: The calculated W(q) factor.
+        complex: The calculated W(q) factor, which is real-valued in all cases (imaginary part = 0).
+
+    Roughness Models:
+
+    Type 0: None / Ideal Interface
+        Profile: Sharp step function
+        Formula: W(q) = **1.0 + 0j**
+        Explanation: Represents a perfectly sharp interface with no roughness. This is the baseline case where reflectivity follows Fresnel equations.
+
+    Type 1: Linear Profile (Triangle Form Factor)
+        Profile: Linear change in scattering length density over finite thickness
+        Formula: W(q) = **sin(√3 q) / (√3 q)**
+        Explanation: Derived from Fourier transform of rectangular derivative profile. The √3 factor normalizes the width parameter to standard deviation σ (L = 2σ√3).
+
+    Type 2: Step Profile (Cosine Form Factor)
+        Profile: Heaviside step function derivative
+        Formula: W(q) = **cos(q)**
+        Explanation: Less common for intrinsic roughness, sometimes used in specific approximations or composite structures.
+
+    Type 3: Exponential Profile
+        Profile: Exponential decay of scattering length density
+        Formula: W(q) = **1 / (1 + q²/2)**
+        Explanation: Results from Lorentzian derivative profile. Used for interfaces with long-range mixing, like degraded surfaces.
+
+    Type 4: Gaussian Profile (Debye-Waller Factor)
+        Profile: Error function (integrated Gaussian), height fluctuations follow Gaussian statistics
+        Formula: W(q) = **e^(-q²/2)**
+        Explanation: Classic form assuming surface heights are normally distributed. Often written as e^(-q²σ²/2) with σ=1 here.
     """
     if rough_type == 0: # None
         return 1.0 + 0j
@@ -58,6 +96,29 @@ def mod_matr_scalar(s00, s01, s10, s11):
     Scalarized version of mod_matr. Converts coherent scattering matrix components 
     to intensity matrix components for incoherent light propagation.
 
+    This function transforms the components of a 2x2 complex scattering matrix S (representing field amplitudes)
+    into the components of a real-valued modified intensity matrix M that describes how intensities propagate
+    in systems where wave phase information is lost, such as thick layers or with incoherent sources.
+
+    Mathematical Definitions:
+
+    Input:  The coherent scattering matrix relates complex fields:
+        [E_out⁺]   = S * [E_in⁺]
+        [E_in⁻]            [E_out⁻]
+
+    Output: The intensity matrix maps intensities (I ∝ |E|²):
+        [I_trans]   = M * [I_inc]
+        [I_back]            [I_ref]
+
+    where I_trans is transmitted intensity, I_back is back-reflected intensity,
+    I_inc is incident intensity, and I_ref is reflected intensity from the layer below.
+
+    Physical Context:
+    In systems with thick layers or incoherent light sources, phase information is lost. This
+    function converts the coherent field description to an incoherent intensity description using
+    the Katsidis & Siapkas formalism. The matrix elements are constructed from the squared magnitudes
+    of S's elements and its determinant, ensuring energy conservation.
+
     Args:
         s00, s01, s10, s11: Complex scalars (dtype=complex128) representing the components 
                             of the coherent scattering matrix S.
@@ -65,14 +126,25 @@ def mod_matr_scalar(s00, s01, s10, s11):
     Returns:
         m00, m01, m10, m11: Real scalars (dtype=float64) representing the components
                             of the modified intensity matrix M.
+
+    References:
+        Katsidis, C. C., & Siapkas, D. I. (2002). Applied Optics, 41(19), 3978-3987.
+        Optimized Modified Matrix calculation.
+    1. Removes sqrt() calls for speed (using manual norm squared).
+    2. Stabilizes M[1, 1] calculation for absorbing/lossy media.
     """
     # helper: fast complex norm squared (avoids sqrt)
     mag_s00_sq = s00.real*s00.real + s00.imag*s00.imag
     mag_s01_sq = s01.real*s01.real + s01.imag*s01.imag
     mag_s10_sq = s10.real*s10.real + s10.imag*s10.imag
     
+    # M00 = |1/t|^2
     m00 = mag_s00_sq
+    
+    # M01 = -|r_back/t|^2
     m01 = -mag_s01_sq
+    
+    # M10 = |r/t|^2
     m10 = mag_s10_sq
     
     # M11 calculation using determinant identity
@@ -96,19 +168,34 @@ def solve_coherent_chunk_scalar(start_idx, end_idx, n_arr, d_arr, rough_arr,
                                 rough_type_arr, lam, NSinFi, pol):
     """
     Calculates the scattering matrix components for a stack of coherent layers using Transfer Matrix Method (TMM),
-    returning them as scalars.
+    returning them as scalars to avoid array allocation overhead.
+
+    This function computes the combined effect of interfaces and layer propagations within
+    a specified range of layers. It accounts for material properties, layer thicknesses,
+    interfacial roughness, and wave polarization to determine how light interacts with stratified media.
+
+    Physical Context:
+    The TMM is fundamental in optics and reflectometry, modeling coherent wave propagation through layered materials.
+    The solution is built by sequentially multiplying 2×2 complex matrices that represent:
+    - Interface effects (reflection/transmission) between layers
+    - Phase shifts as waves propagate through layer thicknesses
 
     Parameters:
-        start_idx, end_idx: range of layers to solve.
-        n_arr: 1D array of refractive indices for the specific wavelength (contiguous).
-        d_arr: Array of thicknesses.
-        rough_arr, rough_type_arr: Roughness parameters.
-        lam: Wavelength.
-        NSinFi: Snell's invariant.
-        pol: Polarization constant.
+        start_idx: First layer index in the stack (inclusive)
+        end_idx: Last layer index + 1 (exclusive)
+        n_arr: Array of complex refractive indices or scattering length densities for each layer
+        d_arr: Array of real layer thicknesses (in same units as wavelength)
+        rough_arr: Array of roughness parameters σ (standard deviations) for interfaces
+        rough_type_arr: Array of integers specifying roughness model types (0-5)
+        lam: Wavelength of incident radiation (same units as thickness, typically Å or nm)
+        NSinFi: Snell's law invariant = N₀ sin(φ₀), with N₀ = incident medium index
+        pol: Polarization state (P=1 for parallel, S=0 for perpendicular to plane of incidence)
 
     Returns:
-        s00, s01, s10, s11: Complex scalars of the scattering matrix.
+        s00, s01, s10, s11: Four complex scalars representing the components of the 2×2 complex scattering matrix S.
+            [E⁺_out]   = S₁₁·E⁺_in + S₁₂·E⁻_out
+            [E⁻_in]     S₂₁·E⁺_in + S₂₂·E⁻_out
+        From this, the reflectivity R = |S₂₁/S₁₁|² and transmittivity T = 1-|r|² can be calculated.
     """
     # Initialize Identity S-Matrix scalars
     s00 = 1.0 + 0j
@@ -206,15 +293,44 @@ def core_engine_grid(wavls, sin_theta_arr, n_layers, indices_T, thicknesses,
                      incoherent_flags, rough_types, rough_vals, 
                      calc_s, calc_p):
     """
-    Computes spectra for a 2D grid of Wavelengths x Angles.
-    
+    Computes polarized reflectance (R) and transmittance (T) spectra for a multilayer structure
+    across a 2D grid of wavelengths and incident angles.
+
+    This function handles both coherent and incoherent light propagation through layered materials
+    using a hybrid matrix method that combines:
+    - Transfer Matrix Method (TMM) for coherent chunks of thin layers
+    - Modified intensity matrices for incoherent boundaries
+
+    The calculation is parallelized using a flattened loop over (Angles × Wavelengths), making it 
+    highly efficient for spectral-angular mapping.
+
     Optimizations applied:
     1. Flattened Parallel Loop: Collapses Angle x Wavelength iteration into one parallel loop.
     2. Transposed Indices: 'indices_T' is (N_wavs, N_layers), ensuring contiguous memory access 
        in the inner calculation loop.
     3. Precomputed Sine: Receives pre-calculated sin(theta) to avoid trig calls in the loop.
-    
-    Returns 2D arrays: [num_angles, num_wavs]
+
+    Parameters:
+        wavls: float array, wavelengths in [length units] to calculate spectra for.
+        sin_theta_arr: float array, precomputed sine of angles of incidence.
+        n_layers: int, total layers including ambient and substrate.
+        indices_T: complex ndarray (n_wavs, n_layers), Transposed refractive indices. 
+                   Transposed shape allows contiguous memory access in the inner loop.
+        thicknesses: float array (n_layers), physical thickness of each layer [length units].
+        incoherent_flags: bool array (n_layers), True for layers that break coherence.
+        rough_types: int array (n_layers), roughness model type for interfaces below each layer.
+        rough_vals: float array (n_layers), roughness σ values [length units] for interfaces.
+        calc_s (bool): True if S-polarization should be calculated.
+        calc_p (bool): True if P-polarization should be calculated.
+
+    Returns:
+        Rs_out, Rp_out: 2D float arrays [num_angles, num_wavs], reflectance for S and P polarizations.
+        Ts_out, Tp_out: 2D float arrays [num_angles, num_wavs], transmittance for S and P polarizations.
+
+    Physical Context:
+    The function models real-world systems where some layers maintain coherence (thin films)
+    while others break it (thick substrates). It combines coherent field calculations with
+    incoherent intensity transport to accurately predict optical properties.
     """
     num_wavs = len(wavls)
     num_angles = len(sin_theta_arr)
@@ -357,20 +473,38 @@ class FastScatterMatrix:
                  roughness_values: list[float], wavls: np.ndarray, theta, 
                  theta_is_radians: bool = False):
         """
-        Prepares physical parameters for fast spectral-angular calculations.
+        Prepares physical parameters for fast spectral-angular calculations of multilayer optical structures.
+
+        This class preprocesses and validates input data for the optimized `core_engine`
+        function, which uses a hybrid coherent-incoherent matrix method to calculate
+        polarized reflectance (R) and transmittance (T) spectra.
 
         Parameters:
             layer_indices: complex ndarray (n_layers × n_wavs)
+                Complex refractive indices [N = n + ik] for each layer at all wavelengths
             thicknesses: float ndarray (n_layers)
+                Physical thickness of layers [length units, same as wavls]
+                Ambient and substrate should have thickness=0
             incoherent_flags: bool ndarray (n_layers)
+                True for layers that break phase coherence (e.g., thick substrates)
             roughness_types: list of int
+                Integer specifying roughness model type (0-5) for each interface below a layer.
             roughness_values: list of float
+                Roughness σ values [length units] for each interface below a layer.
             wavls: float ndarray
+                Wavelengths at which to calculate spectra [same length units as thicknesses]
             theta: float or ndarray
                 Angle(s) of incidence.
             theta_is_radians: bool
                 If True, 'theta' is interpreted as radians. 
                 If False (default), 'theta' is interpreted as degrees.
+
+        Attributes:
+            sin_theta_arr: Precomputed sine of angles for internal calculations
+            n_layers: total number of layers including ambient and substrate
+            indices_T: Transposed indices [N_wavs, N_layers] for contiguous access
+            thicknesses, inc_flags: validated input arrays for core engine
+            r_types, r_vals: extracted roughness parameters as contiguous arrays
         """
         self.wavls = np.ascontiguousarray(wavls, dtype=np.float64)
         
@@ -399,9 +533,26 @@ class FastScatterMatrix:
         
     def compute_RT(self, mode: str = 'u') -> dict[str, np.ndarray]:
         """
-        Calculates R and T spectra.
-        Returns dictionary with keys 'Rs', 'Rp', 'Tu', etc.
-        Output arrays are 2D: [Angles, Wavelengths].
+        Calculates polarized reflectance (R) and transmittance (T) spectra based 
+        on requested polarization mode.
+        
+        This method executes the Numba-optimized `core_engine_grid` with preprocessed parameters,
+        returning spectral results for S (perpendicular) or P (parallel) polarizations
+        as well as unpolarized averages.
+        
+        Args:
+            mode (str): 's', 'p', or 'u' (default).
+                        'unpolarized' computes both S and P and averages them
+        
+        Returns:
+            dict: Contains calculated spectral quantities.
+                  Output arrays are 2D: [num_angles, num_wavs].
+                  If only one angle was provided, the arrays are squeezed to 1D [num_wavs].
+                - Rs, Rp: Reflectance for S and P polarization respectively
+                - Ts, Tp: Transmittance for S and P polarization respectively
+                - Ru, Tu: Unpolarized reflectance and transmittance averages
+        
+        Note: The computation is performed in parallel across wavelengths and angles.
         """
         calc_s = mode.lower() in ('s', 'u', 'both')
         calc_p = mode.lower() in ('p', 'u', 'both')
