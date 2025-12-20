@@ -657,7 +657,8 @@ class MatplotlibStylePlot(pg.PlotWidget):
         y: np.ndarray | List[float], 
         color: ColorType, 
         width: float, 
-        linestyle: LineStyleType, 
+        linestyle: LineStyleType = Qt.PenStyle.SolidLine, 
+        alpha: float = 1.0,
         name: Optional[str] = None, 
         axis: Literal["y-axis", "y2-axis"] = "y-axis"
     ) -> None:
@@ -665,17 +666,19 @@ class MatplotlibStylePlot(pg.PlotWidget):
         Creates and adds a new PlotCurveItem with specified styling to the requested axis.
 
         Args:
-            x (np.ndarray | List[float]): X-axis data.
-            y (np.ndarray | List[float]): Y-axis data.
+            x (np.ndarray | list[float]): X-axis data.
+            y (np.ndarray | list[float]): Y-axis data.
             color (ColorType): Color of the line (hex, name, or tuple).
             width (float): Width of the line.
-            linestyle (LineStyleType): Style of the line ('solid', 'dashed', etc.).
+            alpha (float): Opacity of the line between 0.0 (transparent) and 1.0 (opaque). Defaults to 1.0.
+            linestyle (LineStyleType): Style of the line ('solid', 'dashed', etc.). Defaults to SolidLine.
             name (Optional[str]): Name of the curve for legends. Defaults to None.
             axis (Literal["y-axis", "y2-axis"]): Target axis. Defaults to "y-axis".
         """
         # 1. Resolve Pen
         qt_style = self._resolve_pen_style(linestyle)
         c = self._to_qcolor(color)
+        c.setAlphaF(alpha)
         pen = QPen(c)
         pen.setWidthF(width)
         pen.setStyle(qt_style)
@@ -845,8 +848,7 @@ if __name__ == "__main__":
     # We can still label the axis afterwards
     widget.set_axis_label("y2-axis", "Secondary Scale (Right)", color='#d62728')
     
-    widget.set_view_coupling(link_x=True, link_y=True)
+    widget.set_view_coupling(link_x=True, link_y=False)
         
     widget.show()
-
     sys.exit(app.exec())
