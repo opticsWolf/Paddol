@@ -1,3 +1,10 @@
+# -*- coding: utf-8 -*-
+"""
+PADDOL: Python Advanced Design & Dispersion Optimization Lab
+Copyright (c) 2025 opticsWolf
+
+SPDX-License-Identifier: LGPL-3.0-or-later
+"""
 import sys
 from typing import Optional, Union, Tuple, Dict, Any, Literal, List
 import numpy as np
@@ -841,4 +848,5 @@ if __name__ == "__main__":
     widget.set_view_coupling(link_x=True, link_y=True)
         
     widget.show()
+
     sys.exit(app.exec())
