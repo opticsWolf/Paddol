@@ -301,7 +301,11 @@ def _calc_makima_slopes_batch(x: np.ndarray, y_batch: np.ndarray) -> np.ndarray:
 # ==============================================================================
 
 @njit(fastmath=True, cache=True)
-def _lagrange6_kernel(x: float, xn: np.ndarray, yn: np.ndarray) -> float:
+def _lagrange6_naive(x: float, xn: np.ndarray, yn: np.ndarray) -> float:
+    """
+    Standard Lagrange Polynomial expansion.
+    Fastest implementation, but susceptible to cancellation errors with noisy data.
+    """
     res = 0.0
     for j in range(6):
         basis = 1.0
@@ -312,11 +316,51 @@ def _lagrange6_kernel(x: float, xn: np.ndarray, yn: np.ndarray) -> float:
         res += yn[j] * basis
     return res
 
+@njit(fastmath=True, cache=True)
+def _lagrange6_barycentric(x: float, xn: np.ndarray, yn: np.ndarray) -> float:
+    """
+    Barycentric Lagrange Interpolation (N=6).
+    Numerically stable against cancellation errors ('Inf - Inf') common in noisy data.
+    """
+    # 1. Compute Barycentric Weights (O(k^2))
+    w = np.ones(6, dtype=np.float64)
+    for j in range(6):
+        xj = xn[j]
+        for k in range(6):
+            if k != j:
+                w[j] /= (xj - xn[k])
+
+    # 2. Compute Barycentric Form
+    numerator = 0.0
+    denominator = 0.0
+    
+    for j in range(6):
+        diff = x - xn[j]
+        
+        # Exact node hit check (Required for Barycentric form)
+        if diff == 0.0:
+            return yn[j]
+        
+        term = w[j] / diff
+        numerator += term * yn[j]
+        denominator += term
+    
+    if denominator == 0.0:
+        return 0.0
+        
+    return numerator / denominator
+
+# Wrapper kernels that accept the specific lagrange function to use
 @njit(fastmath=True, cache=True, parallel=True)
-def _eval_sprague_1d(tgt_x: np.ndarray, src_x: np.ndarray, src_y: np.ndarray, out: np.ndarray):
+def _eval_sprague_1d_dispatch(
+    tgt_x: np.ndarray, 
+    src_x: np.ndarray, 
+    src_y: np.ndarray, 
+    out: np.ndarray,
+    use_robust: bool
+):
     n_src = len(src_x)
     n_tgt = len(tgt_x)
-    if n_src < 6: return # Should be handled by wrapper
     
     for i in prange(n_tgt):
         tx = tgt_x[i]
@@ -325,13 +369,22 @@ def _eval_sprague_1d(tgt_x: np.ndarray, src_x: np.ndarray, src_y: np.ndarray, ou
         if w_start < 0: w_start = 0
         if w_start > n_src - 6: w_start = n_src - 6
         
-        # Numba views are cheap
         x_loc = src_x[w_start:w_start+6]
         y_loc = src_y[w_start:w_start+6]
-        out[i] = _lagrange6_kernel(tx, x_loc, y_loc)
+        
+        if use_robust:
+            out[i] = _lagrange6_barycentric(tx, x_loc, y_loc)
+        else:
+            out[i] = _lagrange6_naive(tx, x_loc, y_loc)
 
 @njit(fastmath=True, cache=True, parallel=True)
-def _eval_sprague_batch(tgt_x: np.ndarray, src_x: np.ndarray, src_y_batch: np.ndarray, out_batch: np.ndarray):
+def _eval_sprague_batch_dispatch(
+    tgt_x: np.ndarray, 
+    src_x: np.ndarray, 
+    src_y_batch: np.ndarray, 
+    out_batch: np.ndarray,
+    use_robust: bool
+):
     n_signals = src_y_batch.shape[0]
     n_src = len(src_x)
     n_tgt = len(tgt_x)
@@ -345,105 +398,213 @@ def _eval_sprague_batch(tgt_x: np.ndarray, src_x: np.ndarray, src_y_batch: np.nd
             if w_start > n_src - 6: w_start = n_src - 6
             
             x_loc = src_x[w_start:w_start+6]
-            y_loc = src_y_batch[k, w_start:w_start+6] # View
-            out_batch[k, i] = _lagrange6_kernel(tx, x_loc, y_loc)
+            y_loc = src_y_batch[k, w_start:w_start+6]
+            
+            if use_robust:
+                out_batch[k, i] = _lagrange6_barycentric(tx, x_loc, y_loc)
+            else:
+                out_batch[k, i] = _lagrange6_naive(tx, x_loc, y_loc)
 
 # ==============================================================================
-# 5. MAIN CLASS
+# 5. FLOATER-HORMANN (RATIONAL) KERNELS - NEW!
+# ==============================================================================
+
+@njit(fastmath=True, cache=True)
+def _calc_fh_weights(x: np.ndarray, d: int) -> np.ndarray:
+    """
+    Computes weights for Floater-Hormann Rational Interpolation.
+    Formula: w_k = (-1)^k * sum_{i=...} (1 / prod_{j!=i} |x_i - x_j|)
+    """
+    n = len(x)
+    w = np.zeros(n, dtype=np.float64)
+    
+    # Precompute inverse distance products
+    # This is O(N*d) which is acceptable for setup
+    for k in range(n):
+        s_val = 0.0
+        
+        # Determine range of i: max(0, k-d) <= i <= min(k, n-1-d)
+        i_min = 0 if (k - d) < 0 else (k - d)
+        i_max = k
+        if i_max > (n - 1 - d):
+            i_max = n - 1 - d
+            
+        # Summation
+        for i in range(i_min, i_max + 1):
+            prod = 1.0
+            for j in range(i, i + d + 1):
+                if j != k:
+                    prod *= (1.0 / abs(x[k] - x[j]))
+            s_val += prod
+            
+        w[k] = ((-1.0)**k) * s_val
+        
+    return w
+
+@njit(fastmath=True, cache=True, parallel=True)
+def _eval_fh_1d(
+    tgt_x: np.ndarray,
+    src_x: np.ndarray,
+    src_y: np.ndarray,
+    w: np.ndarray,
+    out: np.ndarray
+):
+    """Barycentric Rational Interpolation (Floater-Hormann)."""
+    n_tgt = len(tgt_x)
+    n_src = len(src_x)
+    
+    for i in prange(n_tgt):
+        tx = tgt_x[i]
+        
+        # Check for exact node match to avoid division by zero
+        exact_match = False
+        exact_idx = -1
+        
+        # Quick check if near boundaries or search (optional, but robust)
+        # Using a small epsilon or exact match
+        for k in range(n_src):
+            if tx == src_x[k]:
+                out[i] = src_y[k]
+                exact_match = True
+                break
+        
+        if exact_match:
+            continue
+            
+        numerator = 0.0
+        denominator = 0.0
+        
+        # Sum over all nodes (O(N) per target point)
+        for k in range(n_src):
+            diff = tx - src_x[k]
+            # Safety double-check (though exact_match loop should catch it)
+            if diff == 0.0:
+                numerator = src_y[k]
+                denominator = 1.0
+                break
+                
+            term = w[k] / diff
+            numerator += term * src_y[k]
+            denominator += term
+            
+        if denominator != 0.0:
+            out[i] = numerator / denominator
+        else:
+            out[i] = 0.0
+
+@njit(fastmath=True, cache=True, parallel=True)
+def _eval_fh_batch(
+    tgt_x: np.ndarray,
+    src_x: np.ndarray,
+    src_y_batch: np.ndarray,
+    w: np.ndarray,
+    out_batch: np.ndarray
+):
+    """Batch Floater-Hormann evaluation."""
+    n_signals = src_y_batch.shape[0]
+    n_src = len(src_x)
+    n_tgt = len(tgt_x)
+    
+    for k in prange(n_signals):
+        for i in range(n_tgt):
+            tx = tgt_x[i]
+            
+            # Exact node match check
+            exact_match = False
+            match_idx = -1
+            
+            # Note: For very large N, a binary search here is better than linear scan,
+            # but for FH interpolation N is usually moderate (<100).
+            for j in range(n_src):
+                if tx == src_x[j]:
+                    match_idx = j
+                    exact_match = True
+                    break
+            
+            if exact_match:
+                out_batch[k, i] = src_y_batch[k, match_idx]
+                continue
+            
+            numerator = 0.0
+            denominator = 0.0
+            
+            for j in range(n_src):
+                diff = tx - src_x[j]
+                term = w[j] / diff
+                numerator += term * src_y_batch[k, j]
+                denominator += term
+                
+            if denominator != 0.0:
+                out_batch[k, i] = numerator / denominator
+            else:
+                out_batch[k, i] = 0.0
+
+# ==============================================================================
+# 6. MAIN CLASS
 # ==============================================================================
 
 class UniSpline:
     """
     Unified High-Performance Interpolation Backend.
-    
-    Supports 'linear', 'pchip', 'makima', and 'sprague' (generalized).
-    Optimized for repeated calls on the same source grid and batch processing.
-    
-    Attributes:
-        x (np.ndarray): Source x-coordinates (knots).
-        y (np.ndarray): Source y-values (1D or 2D batch).
-        method (str): Interpolation method.
     """
     
     def __init__(
         self, 
         x: np.ndarray, 
         y: np.ndarray, 
-        method: Literal["linear", "pchip", "makima", "sprague"] = "pchip"
+        method: Literal["linear", "pchip", "makima", "sprague", "floater_hormann", "fh"] = "pchip",
+        robust: bool = False,
+        d: int = 3
     ):
         """
-        Initialize and pre-compute derivatives (if applicable).
-        
         Args:
-            x: Source x array (must be strictly increasing).
-            y: Source y array. Shape (N,) or (Signals, N).
-            method: 'linear' (new), 'pchip' (monotonic), 'makima' (overshoot control), 'sprague' (smoothness).
+            x: Source x array (must be sorted).
+            y: Source y array (1D or 2D [signals, points]).
+            method: Interpolation method. 
+                    'linear', 'pchip', 'makima', 'sprague', 'floater_hormann' (or 'fh').
+            robust: 
+                If True: Uses robust algorithms (e.g. Barycentric Sprague).
+            d:  Degree for Floater-Hormann (default=3). 
+                0 <= d <= n. d=3 is recommended for cubic-like smoothness.
         """
-        # 1. Validation
-        if x.ndim != 1:
-            raise ValueError("x must be 1D array")
-        if np.any(np.diff(x) <= 0):
-            raise ValueError("x must be strictly increasing")
-            
         self.x = np.ascontiguousarray(x, dtype=np.float64)
         self.method = method.lower()
+        self.robust = robust
+        self.d = d
         
-        # Detect Batch Mode
+        # Detect Batch
         if y.ndim == 1:
             self.is_batch = False
-            if len(x) != len(y):
-                raise ValueError("Length mismatch between x and y")
             self.y = np.ascontiguousarray(y, dtype=np.float64)
         elif y.ndim == 2:
             self.is_batch = True
-            if len(x) != y.shape[1]:
-                raise ValueError("y.shape[1] must match x length")
             self.y = np.ascontiguousarray(y, dtype=np.float64)
         else:
             raise ValueError("y must be 1D or 2D")
 
-        # 2. Pre-computation (Slopes)
-        self.slopes = None
+        # Pre-compute Data (Slopes or Weights)
+        self.aux_data = None 
         
         if self.method == "pchip":
-            if self.is_batch:
-                self.slopes = _calc_pchip_derivs_batch(self.x, self.y)
-            else:
-                self.slopes = _calc_pchip_derivs_1d(self.x, self.y)
-                
+            if self.is_batch: self.aux_data = _calc_pchip_derivs_batch(self.x, self.y)
+            else: self.aux_data = _calc_pchip_derivs_1d(self.x, self.y)
+            
         elif self.method == "makima":
-            if self.is_batch:
-                self.slopes = _calc_makima_slopes_batch(self.x, self.y)
-            else:
-                self.slopes = _calc_makima_slopes_1d(self.x, self.y)
-        
-        elif self.method in ["sprague", "linear"]:
-            # Sprague and Linear are local methods and require no global pre-calc
-            pass
-        else:
-            raise ValueError(f"Unknown method: {self.method}")
+            if self.is_batch: self.aux_data = _calc_makima_slopes_batch(self.x, self.y)
+            else: self.aux_data = _calc_makima_slopes_1d(self.x, self.y)
+            
+        elif self.method in ("floater_hormann", "fh"):
+            # FH Weights depend only on X and d, so shared across batch
+            # Ensure d is valid
+            n = len(self.x)
+            if self.d < 0: self.d = 0
+            if self.d >= n: self.d = n - 1
+            self.aux_data = _calc_fh_weights(self.x, self.d)
 
     def __call__(self, target_x: np.ndarray) -> np.ndarray:
-        """
-        Evaluate interpolation at new target points.
-        
-        Args:
-            target_x: 1D array of target coordinates.
-            
-        Returns:
-            Interpolated values. 
-            If input y was 1D: returns (M,)
-            If input y was 2D: returns (Signals, M)
-        """
         t_x = np.ascontiguousarray(target_x, dtype=np.float64)
         
-        # Fallback for very small datasets
-        if self.x.shape[0] < 4 and self.method in ("pchip", "makima"):
-             return self._fallback_linear(t_x)
-        if self.x.shape[0] < 6 and self.method == "sprague":
-             return self._fallback_linear(t_x)
-
-        # Output Allocation
+        # Allocate
         if self.is_batch:
             out = np.empty((self.y.shape[0], len(t_x)), dtype=np.float64)
         else:
@@ -451,22 +612,26 @@ class UniSpline:
 
         # Dispatch
         if self.method == "linear":
-            if self.is_batch:
-                _eval_linear_batch(t_x, self.x, self.y, out)
-            else:
-                _eval_linear_1d(t_x, self.x, self.y, out)
+            if self.is_batch: _eval_linear_batch(t_x, self.x, self.y, out)
+            else: _eval_linear_1d(t_x, self.x, self.y, out)
 
         elif self.method in ("pchip", "makima"):
-            if self.is_batch:
-                _eval_cubic_hermite_batch(t_x, self.x, self.y, self.slopes, out)
-            else:
-                _eval_cubic_hermite_1d(t_x, self.x, self.y, self.slopes, out)
+            # aux_data holds slopes
+            if self.is_batch: _eval_cubic_hermite_batch(t_x, self.x, self.y, self.aux_data, out)
+            else: _eval_cubic_hermite_1d(t_x, self.x, self.y, self.aux_data, out)
                 
         elif self.method == "sprague":
             if self.is_batch:
-                _eval_sprague_batch(t_x, self.x, self.y, out)
+                _eval_sprague_batch_dispatch(t_x, self.x, self.y, out, self.robust)
             else:
-                _eval_sprague_1d(t_x, self.x, self.y, out)
+                _eval_sprague_1d_dispatch(t_x, self.x, self.y, out, self.robust)
+        
+        elif self.method in ("floater_hormann", "fh"):
+            # aux_data holds weights
+            if self.is_batch:
+                _eval_fh_batch(t_x, self.x, self.y, self.aux_data, out)
+            else:
+                _eval_fh_1d(t_x, self.x, self.y, self.aux_data, out)
                 
         return out
 
@@ -567,7 +732,7 @@ if __name__ == "__main__":
     print("=== UniSpline Advanced Performance Verification ===")
 
     # Configuration: Added 'linear' to the list
-    methods = ["linear", "pchip", "makima", "sprague"]
+    methods = ["linear", "pchip", "makima", "sprague", "floater_hormann"]
     
     # Initialize Suite
     suite = PerformanceSuite(repeats=7, loops=1)
