@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Created on Mon Dec 22 22:16:31 2025
+PADDOL: Python Advanced Design & Dispersion Optimization Lab
+Copyright (c) 2025 opticsWolf
 
-@author: Frank
+SPDX-License-Identifier: LGPL-3.0-or-later
 """
-
 import numpy as np
 from numba import njit, float64
 from dataclasses import dataclass
@@ -171,4 +171,5 @@ if __name__ == "__main__":
     # Check consistency (Perfect White Reflector)
     perfect_white = np.ones(N)
     white_xyz = converter.sd_to_xyz(perfect_white)
+
     print(f"\nPerfect White Y value (Target 100.0): {white_xyz[1]:.4f}")
