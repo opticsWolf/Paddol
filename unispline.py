@@ -22,9 +22,13 @@ def _eval_linear_1d(
     src_y: np.ndarray,
     out: np.ndarray
 ):
-    """
-    Numba-optimized 1D Linear Interpolation.
-    Performs linear extrapolation outside bounds to match Hermite behavior.
+    """Numba-optimized 1D Linear Interpolation with linear extrapolation.
+
+    Args:
+        tgt_x (np.ndarray): Target x-coordinates for evaluation.
+        src_x (np.ndarray): Sorted source x-coordinates.
+        src_y (np.ndarray): Source y-values corresponding to src_x.
+        out (np.ndarray): Output buffer for interpolated values.
     """
     n_src = len(src_x)
     n_tgt = len(tgt_x)
@@ -59,9 +63,13 @@ def _eval_linear_batch(
     src_y_batch: np.ndarray,
     out_batch: np.ndarray
 ):
-    """
-    Batch Linear Interpolation.
-    Parallelizes over signals (K) for high-throughput spectral processing.
+    """Batch Linear Interpolation parallelized over signals.
+
+    Args:
+        tgt_x (np.ndarray): Target x-coordinates for evaluation.
+        src_x (np.ndarray): Sorted source x-coordinates.
+        src_y_batch (np.ndarray): 2D array of source y-values [K signals, N points].
+        out_batch (np.ndarray): 2D output buffer [K signals, M target points].
     """
     n_signals = src_y_batch.shape[0]
     n_src = len(src_x)
@@ -96,7 +104,14 @@ def _eval_linear_batch(
 
 @njit(fastmath=True, cache=True)
 def _hermite_basis(t: float) -> tuple[float, float, float, float]:
-    """Calculates cubic Hermite basis functions for normalized t in [0, 1]."""
+    """Calculates cubic Hermite basis functions for normalized t in [0, 1].
+
+    Args:
+        t (float): Normalized distance between 0 and 1.
+
+    Returns:
+        tuple[float, float, float, float]: The four Hermite basis coefficients.
+    """
     t2 = t * t
     t3 = t2 * t
     h00 = 2.0*t3 - 3.0*t2 + 1.0
@@ -113,9 +128,14 @@ def _eval_cubic_hermite_1d(
     src_d: np.ndarray, 
     out: np.ndarray
 ):
-    """
-    Standard 1D evaluation: 1 signal, many target points.
-    Parallelizes over target points.
+    """Standard 1D Hermite evaluation parallelized over target points.
+
+    Args:
+        tgt_x (np.ndarray): Target x-coordinates.
+        src_x (np.ndarray): Source x-coordinates.
+        src_y (np.ndarray): Source y-values.
+        src_d (np.ndarray): Pre-calculated slopes (derivatives) at source points.
+        out (np.ndarray): Output buffer for interpolated values.
     """
     n_src = len(src_x)
     n_tgt = len(tgt_x)
@@ -157,13 +177,14 @@ def _eval_cubic_hermite_batch(
     src_d_batch: np.ndarray, 
     out_batch: np.ndarray
 ):
-    """
-    Batch evaluation: K signals, N target points.
-    Input y shape: (K, M)
-    Output shape: (K, N)
-    
-    Strategy: Parallelize over SIGNALS (K). 
-    This is typically more efficient for hyperspectral data where K >> N.
+    """Batch Hermite evaluation parallelized over signals (rows).
+
+    Args:
+        tgt_x (np.ndarray): Target x-coordinates.
+        src_x (np.ndarray): Source x-coordinates.
+        src_y_batch (np.ndarray): 2D array of source y-values.
+        src_d_batch (np.ndarray): 2D array of source derivatives.
+        out_batch (np.ndarray): 2D output buffer.
     """
     n_signals = src_y_batch.shape[0]
     n_src = len(src_x)
@@ -208,6 +229,15 @@ def _eval_cubic_hermite_batch(
 
 @njit(fastmath=True, cache=True)
 def _calc_pchip_derivs_1d(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Computes Piecewise Cubic Hermite Interpolating Polynomial (PCHIP) derivatives.
+
+    Args:
+        x (np.ndarray): Sorted x-coordinates.
+        y (np.ndarray): Corresponding y-values.
+
+    Returns:
+        np.ndarray: Derivatives at each source point.
+    """
     n = len(x)
     d = np.zeros(n, dtype=np.float64)
     
@@ -244,7 +274,15 @@ def _calc_pchip_derivs_1d(x: np.ndarray, y: np.ndarray) -> np.ndarray:
 
 @njit(fastmath=True, cache=True, parallel=True)
 def _calc_pchip_derivs_batch(x: np.ndarray, y_batch: np.ndarray) -> np.ndarray:
-    """Computes PCHIP derivatives for multiple signals in parallel."""
+    """Computes PCHIP derivatives for multiple signals in parallel.
+
+    Args:
+        x (np.ndarray): Sorted x-coordinates.
+        y_batch (np.ndarray): 2D array of source y-values.
+
+    Returns:
+        np.ndarray: 2D array of derivatives.
+    """
     n_signals = y_batch.shape[0]
     n_pts = y_batch.shape[1]
     d_out = np.empty_like(y_batch)
@@ -259,6 +297,15 @@ def _calc_pchip_derivs_batch(x: np.ndarray, y_batch: np.ndarray) -> np.ndarray:
 
 @njit(fastmath=True, cache=True)
 def _calc_makima_slopes_1d(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Modified Akima (MAKIMA) derivative calculation.
+
+    Args:
+        x (np.ndarray): Sorted x-coordinates.
+        y (np.ndarray): Corresponding y-values.
+
+    Returns:
+        np.ndarray: Derivatives at each source point.
+    """
     n = len(x)
     # Secants
     deltas = np.empty(n - 1)
@@ -290,6 +337,15 @@ def _calc_makima_slopes_1d(x: np.ndarray, y: np.ndarray) -> np.ndarray:
 
 @njit(fastmath=True, cache=True, parallel=True)
 def _calc_makima_slopes_batch(x: np.ndarray, y_batch: np.ndarray) -> np.ndarray:
+    """Computes MAKIMA derivatives for multiple signals in parallel.
+
+    Args:
+        x (np.ndarray): Sorted x-coordinates.
+        y_batch (np.ndarray): 2D array of source y-values.
+
+    Returns:
+        np.ndarray: 2D array of derivatives.
+    """
     n_signals = y_batch.shape[0]
     s_out = np.empty_like(y_batch)
     for k in prange(n_signals):
@@ -302,9 +358,15 @@ def _calc_makima_slopes_batch(x: np.ndarray, y_batch: np.ndarray) -> np.ndarray:
 
 @njit(fastmath=True, cache=True)
 def _lagrange6_naive(x: float, xn: np.ndarray, yn: np.ndarray) -> float:
-    """
-    Standard Lagrange Polynomial expansion.
-    Fastest implementation, but susceptible to cancellation errors with noisy data.
+    """Standard Lagrange Polynomial expansion for 6 points.
+
+    Args:
+        x (float): Target point.
+        xn (np.ndarray): Local neighborhood of 6 x-coordinates.
+        yn (np.ndarray): Local neighborhood of 6 y-values.
+
+    Returns:
+        float: Interpolated value.
     """
     res = 0.0
     for j in range(6):
@@ -318,9 +380,15 @@ def _lagrange6_naive(x: float, xn: np.ndarray, yn: np.ndarray) -> float:
 
 @njit(fastmath=True, cache=True)
 def _lagrange6_barycentric(x: float, xn: np.ndarray, yn: np.ndarray) -> float:
-    """
-    Barycentric Lagrange Interpolation (N=6).
-    Numerically stable against cancellation errors ('Inf - Inf') common in noisy data.
+    """Barycentric Lagrange Interpolation for 6 points.
+
+    Args:
+        x (float): Target point.
+        xn (np.ndarray): Local neighborhood of 6 x-coordinates.
+        yn (np.ndarray): Local neighborhood of 6 y-values.
+
+    Returns:
+        float: Numerically stable interpolated value.
     """
     # 1. Compute Barycentric Weights (O(k^2))
     w = np.ones(6, dtype=np.float64)
@@ -350,7 +418,6 @@ def _lagrange6_barycentric(x: float, xn: np.ndarray, yn: np.ndarray) -> float:
         
     return numerator / denominator
 
-# Wrapper kernels that accept the specific lagrange function to use
 @njit(fastmath=True, cache=True, parallel=True)
 def _eval_sprague_1d_dispatch(
     tgt_x: np.ndarray, 
@@ -359,6 +426,15 @@ def _eval_sprague_1d_dispatch(
     out: np.ndarray,
     use_robust: bool
 ):
+    """1D Sprague (Fifth-order) evaluation using a 6-point local window.
+
+    Args:
+        tgt_x (np.ndarray): Target x-coordinates.
+        src_x (np.ndarray): Source x-coordinates.
+        src_y (np.ndarray): Source y-values.
+        out (np.ndarray): Output buffer.
+        use_robust (bool): Whether to use the Barycentric form.
+    """
     n_src = len(src_x)
     n_tgt = len(tgt_x)
     
@@ -385,6 +461,15 @@ def _eval_sprague_batch_dispatch(
     out_batch: np.ndarray,
     use_robust: bool
 ):
+    """Batch Sprague evaluation parallelized over signals.
+
+    Args:
+        tgt_x (np.ndarray): Target x-coordinates.
+        src_x (np.ndarray): Source x-coordinates.
+        src_y_batch (np.ndarray): 2D source y-values.
+        out_batch (np.ndarray): 2D output buffer.
+        use_robust (bool): Whether to use the Barycentric form.
+    """
     n_signals = src_y_batch.shape[0]
     n_src = len(src_x)
     n_tgt = len(tgt_x)
@@ -411,9 +496,16 @@ def _eval_sprague_batch_dispatch(
 
 @njit(fastmath=True, cache=True)
 def _calc_fh_weights(x: np.ndarray, d: int) -> np.ndarray:
-    """
-    Computes weights for Floater-Hormann Rational Interpolation.
+    """Computes weights for Floater-Hormann Rational Interpolation.
+
     Formula: w_k = (-1)^k * sum_{i=...} (1 / prod_{j!=i} |x_i - x_j|)
+
+    Args:
+        x (np.ndarray): Source x-coordinates.
+        d (int): Approximation degree (0 <= d < n).
+
+    Returns:
+        np.ndarray: Barycentric rational weights.
     """
     n = len(x)
     w = np.zeros(n, dtype=np.float64)
@@ -449,7 +541,15 @@ def _eval_fh_1d(
     w: np.ndarray,
     out: np.ndarray
 ):
-    """Barycentric Rational Interpolation (Floater-Hormann)."""
+    """1D Barycentric Rational Interpolation (Floater-Hormann).
+
+    Args:
+        tgt_x (np.ndarray): Target x-coordinates.
+        src_x (np.ndarray): Source x-coordinates.
+        src_y (np.ndarray): Source y-values.
+        w (np.ndarray): Pre-calculated FH weights.
+        out (np.ndarray): Output buffer.
+    """
     n_tgt = len(tgt_x)
     n_src = len(src_x)
     
@@ -500,7 +600,15 @@ def _eval_fh_batch(
     w: np.ndarray,
     out_batch: np.ndarray
 ):
-    """Batch Floater-Hormann evaluation."""
+    """Batch Floater-Hormann evaluation parallelized over signals.
+
+    Args:
+        tgt_x (np.ndarray): Target x-coordinates.
+        src_x (np.ndarray): Source x-coordinates.
+        src_y_batch (np.ndarray): 2D source y-values.
+        w (np.ndarray): Pre-calculated FH weights.
+        out_batch (np.ndarray): 2D output buffer.
+    """
     n_signals = src_y_batch.shape[0]
     n_src = len(src_x)
     n_tgt = len(tgt_x)
@@ -544,8 +652,11 @@ def _eval_fh_batch(
 # ==============================================================================
 
 class UniSpline:
-    """
-    Unified High-Performance Interpolation Backend.
+    """Unified High-Performance Interpolation Backend.
+
+    Provides a consistent interface for multiple interpolation methods including
+    Linear, PCHIP, MAKIMA, Sprague, and Floater-Hormann. Supports both single
+    signal (1D) and batch processing (2D) with Numba-accelerated kernels.
     """
     
     def __init__(
@@ -556,16 +667,22 @@ class UniSpline:
         robust: bool = False,
         d: int = 3
     ):
-        """
+        """Initializes the UniSpline engine and pre-calculates necessary auxiliary data.
+
         Args:
-            x: Source x array (must be sorted).
-            y: Source y array (1D or 2D [signals, points]).
-            method: Interpolation method. 
-                    'linear', 'pchip', 'makima', 'sprague', 'floater_hormann' (or 'fh').
-            robust: 
-                If True: Uses robust algorithms (e.g. Barycentric Sprague).
-            d:  Degree for Floater-Hormann (default=3). 
-                0 <= d <= n. d=3 is recommended for cubic-like smoothness.
+            x (np.ndarray): Source x array (must be strictly increasing).
+            y (np.ndarray): Source y array (1D or 2D [signals, points]).
+            method (Literal): Interpolation method to use.
+                - 'linear': Basic linear interpolation.
+                - 'pchip': Piecewise Cubic Hermite (Monotone preserving).
+                - 'makima': Modified Akima (Reduced oscillations).
+                - 'sprague': Fifth-order Lagrange local interpolation.
+                - 'floater_hormann' (or 'fh'): Barycentric Rational interpolation.
+            robust (bool): If True, uses numerically stable algorithms (e.g., Barycentric Sprague).
+            d (int): Degree for Floater-Hormann (default=3). 0 <= d < len(x).
+
+        Raises:
+            ValueError: If y is not 1D or 2D.
         """
         self.x = np.ascontiguousarray(x, dtype=np.float64)
         self.method = method.lower()
@@ -602,6 +719,14 @@ class UniSpline:
             self.aux_data = _calc_fh_weights(self.x, self.d)
 
     def __call__(self, target_x: np.ndarray) -> np.ndarray:
+        """Evaluates the spline at the target x-coordinates.
+
+        Args:
+            target_x (np.ndarray): Coordinates at which to evaluate the spline.
+
+        Returns:
+            np.ndarray: Interpolated values (1D or 2D depending on input y).
+        """
         t_x = np.ascontiguousarray(target_x, dtype=np.float64)
         
         # Allocate
@@ -635,8 +760,15 @@ class UniSpline:
                 
         return out
 
-    def _fallback_linear(self, t_x):
-        """Standard NumPy linear interp fallback."""
+    def _fallback_linear(self, t_x: np.ndarray) -> np.ndarray:
+        """Internal NumPy-based linear interpolation fallback.
+
+        Args:
+            t_x (np.ndarray): Target x-coordinates.
+
+        Returns:
+            np.ndarray: Linearly interpolated results.
+        """
         if not self.is_batch:
             return np.interp(t_x, self.x, self.y)
         else:
