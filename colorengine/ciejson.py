@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Created on Mon Dec 22 22:55:18 2025
+PADDOL: Python Advanced Design & Dispersion Optimization Lab
+Copyright (c) 2025 opticsWolf
 
-@author: Frank
+SPDX-License-Identifier: LGPL-3.0-or-later
 """
-
 import json
 import time
 import os
@@ -62,4 +62,5 @@ class CIEJSONReader:
                 rel = str(f.relative_to(directory))
                 c = self.read_file(f)
                 yield rel, self.get_metadata(c), {q: self.get_spectrum(c, q) for q in self.list_quantities(c)}
+
             except Exception: continue
